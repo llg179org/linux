@@ -1,0 +1,34 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _Q6_VOICE_H
+#define _Q6_VOICE_H
+
+#define Q6VOICE_CAPTURE BIT(15)
+
+/*
+ * Path types from 0x8000 - 0xffff and similar sequences occurring every 65536
+ * values are reserved for specifying whether the path is capture or playback.
+ */
+enum q6voice_path_type {
+	Q6VOICE_PATH_VOICE= 0,
+	Q6VOICE_PATH_VOIP,
+	Q6VOICE_PATH_VOLTE,
+	Q6VOICE_PATH_VOICE2,
+	Q6VOICE_PATH_QCHAT,
+	Q6VOICE_PATH_VOWLAN,
+	Q6VOICE_PATH_VOICEMMODE1,
+	Q6VOICE_PATH_VOICEMMODE2,
+	Q6VOICE_PATH_COUNT
+};
+
+struct q6voice;
+
+struct q6voice *q6voice_create(struct device *dev, bool cvd_v2_3);
+int q6voice_start(struct q6voice *v, enum q6voice_path_type path, bool capture);
+int q6voice_stop(struct q6voice *v, enum q6voice_path_type path, bool capture);
+
+int q6voice_get_port(struct q6voice *v, enum q6voice_path_type path,
+		     bool capture);
+void q6voice_set_port(struct q6voice *v, enum q6voice_path_type path,
+		      bool capture, int index);
+
+#endif /*_Q6_VOICE_H */
