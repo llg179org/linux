@@ -491,6 +491,28 @@ static int rpmsg_chrdev_probe(struct rpmsg_device *rpdev)
 	struct rpmsg_eptdev *eptdev;
 	struct device *dev = &rpdev->dev;
 
+	/*
+	 * FP3 SLIMbus debug: DIAG (data) is safe on any edge, but binding the
+	 * diag CONTROL channel (DIAG_CNTL) provokes the peripheral handshake and
+	 * crashes the modem/wcnss (SoC reset). Only expose DIAG_CNTL for the
+	 * ADSP/LPASS edge (DT node c200000), identified by walking up the parent
+	 * chain to the platform device name.
+	 */
+	if (!strcmp(rpdev->id.name, "DIAG_CNTL")) {
+		struct device *d = dev->parent;
+		bool is_adsp = false;
+
+		while (d) {
+			if (dev_name(d) && strstr(dev_name(d), "c200000")) {
+				is_adsp = true;
+				break;
+			}
+			d = d->parent;
+		}
+		if (!is_adsp)
+			return -ENODEV;
+	}
+
 	memcpy(chinfo.name, rpdev->id.name, RPMSG_NAME_SIZE);
 	chinfo.src = rpdev->src;
 	chinfo.dst = rpdev->dst;
@@ -523,11 +545,13 @@ static void rpmsg_chrdev_remove(struct rpmsg_device *rpdev)
 static struct rpmsg_device_id rpmsg_chrdev_id_table[] = {
 	{ .name	= "rpmsg-raw" },
 	{ .name	= "rpmsg_chrdev" },
-	/* FP3 SLIMbus debug: expose the ADSP diag DATA SMD channel as /dev/rpmsgN
-	 * so userspace can read the ADSP's own F3 log during framer bring-up.
-	 * DATA only (no DIAG_CNTL) — binding the control channel provokes the
-	 * peripheral handshake and can trigger an SSR/SoC reset. */
+	/* FP3 SLIMbus debug: expose the ADSP diag channels as /dev/rpmsgN so
+	 * userspace can read the ADSP's F3 log and push masks during framer
+	 * bring-up. DIAG (data) binds on any edge; DIAG_CNTL is gated to the
+	 * ADSP/LPASS edge only in rpmsg_chrdev_probe() (control-channel binds on
+	 * modem/wcnss crash the SoC). */
 	{ .name	= "DIAG" },
+	{ .name	= "DIAG_CNTL" },
 	{ },
 };
 MODULE_DEVICE_TABLE(rpmsg, rpmsg_chrdev_id_table);
