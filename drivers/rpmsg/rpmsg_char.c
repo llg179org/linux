@@ -523,6 +523,10 @@ static void rpmsg_chrdev_remove(struct rpmsg_device *rpdev)
 static struct rpmsg_device_id rpmsg_chrdev_id_table[] = {
 	{ .name	= "rpmsg-raw" },
 	{ .name	= "rpmsg_chrdev" },
+	/* FP3 SLIMbus debug: expose ADSP/modem diag SMD channels as /dev/rpmsgN
+	 * so userspace can read the ADSP's own F3 log during framer bring-up. */
+	{ .name	= "DIAG" },
+	{ .name	= "DIAG_CNTL" },
 	{ },
 };
 MODULE_DEVICE_TABLE(rpmsg, rpmsg_chrdev_id_table);
