@@ -578,6 +578,8 @@ static const struct of_device_id qcom_pdm_domains[] __maybe_unused = {
 	{ .compatible = "qcom,sc8280xp", .data = sc8280xp_domains, },
 	{ .compatible = "qcom,sdm630", .data = sdm630_domains, },
 	{ .compatible = "qcom,sdm636", .data = sdm630_domains, },
+	{ .compatible = "qcom,msm8953", .data = sdm660_domains, },
+	{ .compatible = "qcom,sdm632", .data = sdm660_domains, },
 	{ .compatible = "qcom,sda660", .data = sdm660_domains, },
 	{ .compatible = "qcom,sdm660", .data = sdm660_domains, },
 	{ .compatible = "qcom,sdm670", .data = sdm670_domains, },

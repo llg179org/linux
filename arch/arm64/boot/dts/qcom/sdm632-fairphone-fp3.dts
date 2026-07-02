@@ -5,6 +5,7 @@
 /dts-v1/;
 
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/sound/qcom,wcd9335.h>
 #include "sdm632.dtsi"
 #include "pm8953.dtsi"
 #include "pmi632.dtsi"
@@ -34,6 +35,47 @@
 			linux,code = <KEY_VOLUMEUP>;
 			gpios = <&tlmm 85 GPIO_ACTIVE_LOW>;
 		};
+	};
+
+	/*
+	 * Conservative battery profile for first charger bring-up.
+	 * voltage-max-design (= float voltage) and capacity come from the
+	 * Fairphone downstream qg-batterydata (max-voltage 4.39 V, 3000 mAh).
+	 * Charge current is intentionally limited to 1 A, well below the
+	 * downstream 2.0-2.7 A fast-charge value, to minimise risk while testing.
+	 */
+	fp3_battery: battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4390000>;
+		charge-full-design-microamp-hours = <3000000>;
+		constant-charge-current-max-microamp = <1000000>;
+		constant-charge-voltage-max-microvolt = <4390000>;
+
+		/*
+		 * Voltage-based fuel gauge: OCV->capacity lookup table.
+		 * Extracted from the downstream Fairphone qpnp-qg battery
+		 * profile (qg-batterydata-Kayo-3000mah-Nov4th2019-pmi632,
+		 * pc-temp-v1-lut, 25 degC column). Values converted from the
+		 * downstream 100uV units to microvolts. This is the same OCV
+		 * characterisation the downstream QG gauge uses; the mainline
+		 * power-supply core interpolates capacity from it.
+		 */
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 = <4383100 100>, <4357500 98>, <4332500 96>, <4308200 94>,
+			<4284000 92>, <4260000 90>, <4236300 88>, <4212900 86>,
+			<4189900 84>, <4167300 82>, <4144900 80>, <4124000 78>,
+			<4105600 76>, <4086900 74>, <4063800 72>, <4038100 70>,
+			<4017500 68>, <4001900 66>, <3987500 64>, <3973200 62>,
+			<3958900 60>, <3940200 58>, <3914200 56>, <3891000 54>,
+			<3875700 52>, <3863600 50>, <3854000 48>, <3846400 46>,
+			<3839400 44>, <3832500 42>, <3826200 40>, <3820300 38>,
+			<3815000 36>, <3810200 34>, <3806200 32>, <3802500 30>,
+			<3798900 28>, <3795300 26>, <3790200 24>, <3781500 22>,
+			<3770800 20>, <3759600 18>, <3746800 16>, <3731200 14>,
+			<3716600 12>, <3707000 10>, <3704400 9>, <3703100 8>,
+			<3701300 7>, <3697600 6>, <3676700 5>, <3634800 4>,
+			<3578500 3>, <3501900 2>, <3383200 1>, <3000000 0>;
 	};
 
 	vreg_cam_af_2p85: regulator-cam-af-2p85 {
@@ -177,6 +219,11 @@
 &lpass {
 	firmware-name = "qcom/msm8953/fairphone/fp3/adsp.mbn";
 
+	/*
+	 * NOTE: ADSP CX-corner ruled out as the SLIMbus-framer blocker on
+	 * 2026-06-30/07-01 — pinning CX at INT_MAX across handover (verified
+	 * cx/perf_state=INT_MAX) still left INT_STAT=0. See FP3-slim-debug-journal.md.
+	 */
 	status = "okay";
 };
 
@@ -280,6 +327,11 @@
 	};
 };
 
+&pmi632_charger {
+	monitored-battery = <&fp3_battery>;
+	status = "okay";
+};
+
 &pmi632_vbus {
 	regulator-min-microamp = <500000>;
 	regulator-max-microamp = <1000000>;
@@ -291,6 +343,14 @@
 };
 
 &q6afedai {
+	dai@2 {
+		reg = <SLIMBUS_0_RX>;
+	};
+
+	dai@3 {
+		reg = <SLIMBUS_0_TX>;
+	};
+
 	dai@127 {
 		reg = <QUINARY_MI2S_RX>;
 		qcom,sd-lines = <0 1>;
@@ -316,15 +376,37 @@
 &sound_card {
 	model = "Fairphone 3";
 
+	/*
+	 * FP3 audio codec is a WCD9326 (Tasha-lite) on SLIMbus carrying the
+	 * earpiece, headphone jack and microphones (proven by the downstream
+	 * mixer_paths_tashalite.xml: SLIM RX0 / RX INT0 / CLSH_DSM_OUT). The
+	 * loudspeaker is a separate aw8898 amp on Quinary MI2S. The PM8953
+	 * integrated analog codec is unused on FP3, so the base primary/tertiary
+	 * MI2S (wcd_codec) dai-links are dropped.
+	 *
+	 * 2026-06-29: SLIMbus/WCD9326 bring-up is parked at a proven frontier
+	 * (ADSP LPASS SLIMbus master never frames the bus despite QMI acks; no
+	 * mainline msm8953 board has working SLIMbus audio). The two slim dai-links
+	 * are temporarily removed so the card registers and the aw8898 LOUDSPEAKER
+	 * works again instead of the whole card deferring on the absent codec.
+	 * Re-add slim-rx/tx-dai-link + flip slim_msm status to "okay" to resume.
+	 */
+
 	pinctrl-0 = <&quin_mi2s_active>, <&quin_mi2s_ws_active>;
 	pinctrl-1 = <&quin_mi2s_sleep>, <&quin_mi2s_ws_sleep>;
-	pinctrl-names = "default",
-			"sleep";
+	pinctrl-names = "default", "sleep";
 
 	status = "okay";
 
-	/* FP3 does not use the codec on PM8953 */
+	/*
+	 * The base msm8953.dtsi sound-card audio-routing references PM8953
+	 * wcd-digital widgets (AMIC/MIC BIAS External) which no longer exist
+	 * once the primary/tertiary MI2S (PM8953) links are deleted; leaving it
+	 * makes snd_soc_dapm_add_routes fail and the whole card never registers.
+	 * Drop it — the aw8898 speaker-only card needs no DAPM routing.
+	 */
 	/delete-property/ audio-routing;
+
 	/delete-node/ primary-mi2s-dai-link;
 	/delete-node/ tertiary-mi2s-dai-link;
 
@@ -341,6 +423,142 @@
 
 		platform {
 			sound-dai = <&q6routing>;
+		};
+	};
+
+	/*
+	 * EXPERIMENT 2026-06-30 (P1, AFE-port-trigger): the SLIM RX/TX BE DAI-links
+	 * normally use the wcd9335 codec (AIF1_PB/AIF1_CAP), but wcd9335 cannot
+	 * probe until the bus is framed (laddr) -> the whole card defers (chicken-egg).
+	 * To test whether q6afe AFE_PORT_START(SLIMBUS_0_RX) itself nudges the FP3
+	 * vendor ADSP into becoming the active framer (the SECOND init path; the
+	 * downstream uses boot-time ACDB instead), the codec subnodes are dropped so
+	 * qcom_snd_parse_of() falls back to snd_soc_dummy_dlc (common.c:151). The card
+	 * then registers and a PCM on the SLIMBUS_0_RX BE can fire AFE_PORT_DEVICE_START
+	 * WITHOUT the codec. The wcd9335 slim@1 device node is kept so it can still
+	 * enumerate over the bus once (if) the framer comes up.
+	 * Test: amixer route MultiMedia1 -> SLIMBUS_0_RX, aplay; watch for
+	 * "Rcvd master capability" / the "capability exchange timed-out" loop stopping.
+	 * Revert (restore the codec subnodes) once the framer path is proven.
+	 */
+	slim-rx-dai-link {
+		link-name = "SLIM RX";
+
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+	};
+
+	slim-tx-dai-link {
+		link-name = "SLIM TX";
+
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_TX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+	};
+};
+
+/*
+ * SLIMbus NGD controller (absent in mainline msm8953.dtsi) + the WCD9326
+ * (Tasha-lite) codec. Addresses/IRQs from the downstream FP3 msm8953.dtsi
+ * (slim@c140000: slimbus_physical 0xc140000, bam 0xc104000, irq 163/180);
+ * codec params from msm8953-audio.dtsi. Structure mirrors msm8996.
+ */
+&soc {
+	wcd_mclk: wcd-mclk {
+		/*
+		 * Codec MCLK 9.6 MHz. Downstream sources it from gcc div_clk2;
+		 * here derive 9.6 MHz from the 19.2 MHz RPM BB_CLK1. NEEDS
+		 * VERIFICATION on first bring-up (wcd9335 rejects wrong rates).
+		 */
+		compatible = "fixed-factor-clock";
+		#clock-cells = <0>;
+		clocks = <&rpmcc RPM_SMD_BB_CLK1>;
+		clock-div = <2>;
+		clock-mult = <1>;
+	};
+
+	slimbam: dma-controller@c104000 {
+		compatible = "qcom,bam-v1.7.0";
+		qcom,controlled-remotely;
+		reg = <0x0c104000 0x2a000>;
+		interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>;
+		#dma-cells = <1>;
+		qcom,ee = <1>;
+		qcom,num-ees = <2>;
+		num-channels = <31>;
+	};
+
+	slim_msm: slim-ngd@c140000 {
+		compatible = "qcom,slim-ngd-v1.5.0";
+		reg = <0x0c140000 0x2c000>;
+		interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
+		dmas = <&slimbam 3>, <&slimbam 4>;
+		dma-names = "rx", "tx";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/*
+		 * EXPERIMENT 2026-06-30: expose the 19.2 MHz RPM BB_CLK1 (the SLIMbus
+		 * bus reference) to the NGD driver so it can force-enable it early and
+		 * break the codec/framer/clock chicken-egg. See qcom-ngd-ctrl probe.
+		 */
+		clocks = <&rpmcc RPM_SMD_BB_CLK1>;
+		clock-names = "slimbus_ref";
+
+		/*
+		 * 2026-06-30 RESUME: re-enabled to capture the exact NGD/QMI failure
+		 * sequence and diff against the proven downstream working trace
+		 * (subsys-pil-tz adsp audio-PD frames the bus; laddr 0xc8/0xc7).
+		 * Downstream-trace proved this very ADSP firmware CAN frame the bus,
+		 * so the gate is mainline NGD<->ADSP capability exchange / audio_pd.
+		 */
+		status = "okay";
+
+		slim@1 {
+			reg = <1>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+
+			tasha_ifd: ifd@0,0 {
+				compatible = "slim217,1a0";
+				reg = <0 0>;
+			};
+
+			wcd9335: codec@1,0 {
+				compatible = "slim217,1a0";
+				reg = <1 0>;
+				slim-ifc-dev = <&tasha_ifd>;
+
+				#sound-dai-cells = <1>;
+
+				interrupt-parent = <&tlmm>;
+				interrupts = <73 IRQ_TYPE_LEVEL_HIGH>;
+				interrupt-controller;
+				#interrupt-cells = <1>;
+
+				reset-gpios = <&tlmm 67 GPIO_ACTIVE_LOW>;
+				pinctrl-0 = <&wcd_intr_default>;
+				pinctrl-names = "default";
+
+				clock-names = "mclk", "slimbus";
+				clocks = <&wcd_mclk>, <&rpmcc RPM_SMD_BB_CLK1>;
+
+				vdd-buck-supply = <&pm8953_l5>;
+				vdd-buck-sido-supply = <&pm8953_l5>;
+				vdd-tx-supply = <&pm8953_l5>;
+				vdd-rx-supply = <&pm8953_l5>;
+				vdd-io-supply = <&pm8953_l5>;
+				vdd-micbias-supply = <&pm8953_l13>;
+			};
 		};
 	};
 };
@@ -495,6 +713,14 @@
 		function = "pri_mi2s_ws";
 		drive-strength = <2>;
 		bias-pull-down;
+	};
+
+	wcd_intr_default: wcd-intr-default-state {
+		pins = "gpio73";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
 	};
 };
 

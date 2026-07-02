@@ -3,6 +3,7 @@
 // Copyright (c) 2018, Linaro Limited
 
 #include <linux/irq.h>
+#include <linux/clk.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -433,6 +434,54 @@ static int qcom_slim_qmi_send_power_request(struct qcom_slim_ngd_ctrl *ctrl,
 	return 0;
 }
 
+/*
+ * Ask the ADSP whether its SLIMbus framer is up and running. The downstream
+ * driver (slim-msm-ngd.c) issues this CHECK_FRAMER_STATUS QMI request after the
+ * power request and loops on it until the framer reports ready, BEFORE doing the
+ * SLIMbus capability/reconfiguration exchange. Mainline historically skipped it,
+ * which is why msm8953/sdm660 SLIMbus audio never came up: the AP started the
+ * capability exchange before the ADSP framer had framed the bus. The request has
+ * a zero-length payload; the response is a bare qmi_response_type_v01 (reuse the
+ * power-resp ei, identical shape).
+ */
+static int __maybe_unused
+qcom_slim_qmi_check_framer_request(struct qcom_slim_ngd_ctrl *ctrl)
+{
+	struct slimbus_power_resp_msg_v01 resp = { { 0, 0 } };
+	struct qmi_txn txn;
+	int rc;
+
+	rc = qmi_txn_init(ctrl->qmi.handle, &txn,
+				slimbus_power_resp_msg_v01_ei, &resp);
+	if (rc < 0) {
+		dev_err(ctrl->dev, "QMI TXN init fail: %d\n", rc);
+		return rc;
+	}
+
+	rc = qmi_send_request(ctrl->qmi.handle, NULL, &txn,
+				SLIMBUS_QMI_CHECK_FRAMER_STATUS_REQ,
+				0, NULL, NULL);
+	if (rc < 0) {
+		dev_err(ctrl->dev, "QMI check-framer send req fail %d\n", rc);
+		qmi_txn_cancel(&txn);
+		return rc;
+	}
+
+	rc = qmi_txn_wait(&txn, SLIMBUS_QMI_RESP_TOUT);
+	if (rc < 0) {
+		dev_err(ctrl->dev, "QMI check-framer TXN wait fail: %d\n", rc);
+		return rc;
+	}
+
+	if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
+		dev_err(ctrl->dev, "QMI check-framer failed 0x%x\n",
+			resp.resp.result);
+		return -EREMOTEIO;
+	}
+
+	return 0;
+}
+
 static const struct qmi_msg_handler qcom_slim_qmi_msg_handlers[] = {
 	{
 		.type = QMI_RESPONSE,
@@ -606,6 +655,8 @@ static void qcom_slim_ngd_rx(struct qcom_slim_ngd_ctrl *ctrl, u8 *buf)
 	mt = SLIM_HEADER_GET_MT(buf[0]);
 	len = SLIM_HEADER_GET_RL(buf[0]);
 	mc = SLIM_HEADER_GET_MC(buf[1]);
+
+	dev_info(ctrl->dev, "DBG RX msg: mt=0x%x mc=0x%x len=%d\n", mt, mc, len);
 
 	if (mc == SLIM_USR_MC_MASTER_CAPABILITY &&
 		mt == SLIM_MSG_MT_SRC_REFERRED_USER)
@@ -1179,6 +1230,7 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 			return -EREMOTEIO;
 	}
 
+	dev_info(ctrl->dev, "DBG power_up: enter state=%d\n", ctrl->state);
 	if (ctrl->state == QCOM_SLIM_NGD_CTRL_ASLEEP ||
 		ctrl->state == QCOM_SLIM_NGD_CTRL_DOWN) {
 		ret = qcom_slim_qmi_power_request(ctrl, true);
@@ -1187,6 +1239,19 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 					ret);
 			return ret;
 		}
+		dev_info(ctrl->dev, "DBG power_up: QMI power request OK\n");
+
+		/*
+		 * NOTE (2026-06-30): the speculative CHECK_FRAMER_STATUS poll that
+		 * used to live here has been REMOVED. The proven-working downstream
+		 * SvcId 0x301 (SLIMbus QMI) sequence captured on UT 4.9.218
+		 * (ut-framer-1003/ipc-slim.txt) is ONLY SELECT_INSTANCE (MI:0x20) +
+		 * POWER_REQ (MI:0x21), then BAM enable, then "Rcvd master capability"
+		 * ~1.3 ms later. Downstream NEVER sends CHECK_FRAMER (MI:0x22) on 301
+		 * (0x22 only appears on SvcId 31/34). The poll returned rc=0 on the
+		 * first try yet the bus stayed silent, so it was speculative noise;
+		 * dropping it aligns the mainline 301 traffic exactly with downstream.
+		 */
 	}
 
 	ctrl->ver = readl_relaxed(ctrl->base);
@@ -1194,6 +1259,7 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 	ctrl->ver >>= 16;
 
 	laddr = readl_relaxed(ngd->base + NGD_STATUS);
+	dev_info(ctrl->dev, "DBG power_up: ver=0x%x ngd_status=0x%x\n", ctrl->ver, laddr);
 	if (laddr & NGD_LADDR) {
 		/*
 		 * external MDM restart case where ADSP itself was active framer
@@ -1219,10 +1285,25 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 	writel_relaxed(rx_msgq|SLIM_RX_MSGQ_TIMEOUT_VAL,
 				ngd->base + NGD_RX_MSGQ_CFG);
 	qcom_slim_ngd_setup(ctrl);
+	dev_info(ctrl->dev, "DBG power_up: NGD setup done, waiting for capability (reconf)\n");
 
+	/*
+	 * EXPERIMENT 2026-06-30 (#1, boot-safe v2): keep the single 1s wait (the
+	 * 10x retry loop hard-hung boot -> slot_b unbootable), but on timeout dump
+	 * NGD_STATUS/CFG/INT_STAT to learn whether the AP NGD received ANY slim RX
+	 * message (INT_STAT RX_MSG_RCVD bit30 / LADDR appearing) = does the ADSP
+	 * frame at all, or is the bus dead silent. Pure read-only diagnostics, no
+	 * added boot delay.
+	 */
 	time_left = wait_for_completion_timeout(&ctrl->reconf, HZ);
 	if (!time_left) {
-		dev_err(ctrl->dev, "capability exchange timed-out\n");
+		u32 st  = readl_relaxed(ngd->base + NGD_STATUS);
+		u32 cfg = readl_relaxed(ngd->base + NGD_CFG);
+		u32 ist = readl_relaxed(ngd->base + NGD_INT_STAT);
+
+		dev_err(ctrl->dev,
+			"capability exchange timed-out STATUS=0x%x CFG=0x%x INT_STAT=0x%x\n",
+			st, cfg, ist);
 		return -ETIMEDOUT;
 	}
 
@@ -1614,6 +1695,30 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
 	ctrl->base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(ctrl->base))
 		return PTR_ERR(ctrl->base);
+
+	/*
+	 * EXPERIMENT 2026-06-30: force-enable the SLIMbus reference clock
+	 * (RPM_SMD_BB_CLK1, 19.2 MHz) here, early and unconditionally, to break
+	 * the clock chicken-egg: bb_clk1 is wired as the wcd9335 "slimbus" clock
+	 * and is otherwise only enabled once the codec probes far enough -- which
+	 * it can't, because it has no logical address, because the framer never
+	 * frames, possibly because this reference is off. Voting it from the
+	 * always-early NGD probe tests whether the missing bus-reference clock is
+	 * what stops the ADSP framer. Optional: absent clock -> no-op, no build break.
+	 */
+	{
+		struct clk *ref = devm_clk_get_optional(dev, "slimbus_ref");
+
+		if (IS_ERR(ref))
+			return dev_err_probe(dev, PTR_ERR(ref),
+					     "slimbus_ref clk get failed\n");
+		ret = clk_prepare_enable(ref);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "slimbus_ref clk enable failed\n");
+		dev_info(dev, "DBG slimbus_ref (bb_clk1) force-enabled: %s\n",
+			 ref ? "yes" : "absent");
+	}
 
 	ret = platform_get_irq(pdev, 0);
 	if (ret < 0)
