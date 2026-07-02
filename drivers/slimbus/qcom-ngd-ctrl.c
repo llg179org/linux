@@ -1688,14 +1688,25 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
 		return PTR_ERR(ctrl->base);
 
 	/*
-	 * EXPERIMENT 2026-06-30: force-enable the SLIMbus reference clock
-	 * (RPM_SMD_BB_CLK1, 19.2 MHz) here, early and unconditionally, to break
-	 * the clock chicken-egg: bb_clk1 is wired as the wcd9335 "slimbus" clock
-	 * and is otherwise only enabled once the codec probes far enough -- which
-	 * it can't, because it has no logical address, because the framer never
-	 * frames, possibly because this reference is off. Voting it from the
-	 * always-early NGD probe tests whether the missing bus-reference clock is
-	 * what stops the ADSP framer. Optional: absent clock -> no-op, no build break.
+	 * EXPERIMENT 2026-07-02: do NOT drive the SLIMbus reference clock
+	 * (RPM_SMD_BB_CLK1) from the AP during ADSP framer bring-up.
+	 *
+	 * Static analysis of the stock adsp.mbn shows the ADSP SLIMbus driver
+	 * chooses between "active framer" and "external framer" mode from an
+	 * "external clock toggle" detection ("Switching to external framer mode
+	 * due to external clock toggle" vs "...active framer mode due to lack of
+	 * external clock toggle"). In external-framer mode it goes passive and
+	 * never broadcasts master capability -- exactly our failure (NGD
+	 * INT_STAT=0x0). clk_summary confirms the ONLY AP vote for bb_clk1 was
+	 * this driver's earlier force-enable, which fired at ~12.7s just as the
+	 * ADSP booted at ~13.05s -- i.e. the AP toggled the ref clock on precisely
+	 * during the ADSP's framer-mode decision. Here we get the clock (to keep
+	 * the DT binding valid) but deliberately do NOT enable it, so the AP is
+	 * silent on bb_clk1 while the ADSP decides. If the theory holds the ADSP
+	 * should now pick active-framer mode (INT_STAT != 0, capability received).
+	 * The wcd9335 "slimbus" clock still lists bb_clk1, so once the codec gets
+	 * a logical address it will vote it -- fine, that is after the ADSP is
+	 * already master. Absent clock -> no-op, no build break.
 	 */
 	{
 		struct clk *ref = devm_clk_get_optional(dev, "slimbus_ref");
@@ -1703,12 +1714,8 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
 		if (IS_ERR(ref))
 			return dev_err_probe(dev, PTR_ERR(ref),
 					     "slimbus_ref clk get failed\n");
-		ret = clk_prepare_enable(ref);
-		if (ret)
-			return dev_err_probe(dev, ret,
-					     "slimbus_ref clk enable failed\n");
-		dev_info(dev, "DBG slimbus_ref (bb_clk1) force-enabled: %s\n",
-			 ref ? "yes" : "absent");
+		dev_info(dev, "DBG slimbus_ref (bb_clk1): AP NOT driving it (external-clock-toggle test): %s\n",
+			 ref ? "present" : "absent");
 	}
 
 	irq = platform_get_irq(pdev, 0);
