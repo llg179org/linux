@@ -3,6 +3,7 @@
 // Copyright (c) 2018, Linaro Limited
 
 #include <dt-bindings/sound/qcom,q6afe.h>
+#include <linux/devm-helpers.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/uaccess.h>
@@ -380,6 +381,7 @@ struct q6afe {
 	wait_queue_head_t wait;
 	struct list_head port_list;
 	spinlock_t port_list_lock;
+	struct delayed_work core_clk_work;
 };
 
 struct afe_port_cmd_device_start {
@@ -1896,10 +1898,85 @@ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 }
 EXPORT_SYMBOL(q6afe_vote_lpass_core_hw);
 
+/*
+ * EXPERIMENT 2026-07-03 (FP3 SLIMbus framer, one-change, boot-safe): ask the
+ * ADSP to keep the LPASS core shared clock enabled, via the legacy
+ * AFE_PARAM_ID_LPASS_CORE_SHARED_CLOCK_CONFIG (downstream techpack q6afe.c
+ * afe_enable_lpass_core_shared_clock; era-matched to this ADSP.VT.3.0 AVS).
+ * Rationale: FRM/NGD register READS work but WRITES don't latch and
+ * FRM_STAT=0 -> the SLIMbus core functional clock domain is gated; this param
+ * is the documented AP-side knob asking the ADSP for the LPASS core clock.
+ * One-shot delayed work; timeout-based send; an error reply is tolerated.
+ */
+#define AFE_PARAM_ID_LPASS_CORE_SHARED_CLOCK_CONFIG	0x0001028C
+#define AFE_API_VERSION_LPASS_CORE_SHARED_CLK_CONFIG	0x1
+
+struct afe_param_id_lpass_core_shared_clk_cfg {
+	u32 lpass_core_shared_clk_cfg_minor_version;
+	u32 enable;
+} __packed;
+
+static void q6afe_core_shared_clk_work(struct work_struct *work)
+{
+	struct q6afe *afe = container_of(work, struct q6afe,
+					 core_clk_work.work);
+	struct afe_param_id_lpass_core_shared_clk_cfg cfg = {
+		.lpass_core_shared_clk_cfg_minor_version =
+			AFE_API_VERSION_LPASS_CORE_SHARED_CLK_CONFIG,
+		.enable = 1,
+	};
+	struct afe_port_cmd_set_param_v2 *param;
+	struct afe_port_param_data_v2 *pdata;
+	struct apr_pkt *pkt;
+	int ret, pkt_size = APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata) +
+			    sizeof(cfg);
+	void *pl;
+
+	/*
+	 * Inline packet build (mirrors q6afe_port_set_param_v2) with
+	 * token=AFE_CLK_TOKEN and port=NULL: no q6afe_port machinery needed
+	 * (q6afe_port_get_from_id() expects a CHILD dev whose parent holds the
+	 * q6afe drvdata and crashes when given afe->dev directly), and the
+	 * callback routes the AFE_CLK_TOKEN basic-rsp to afe->result/afe->wait,
+	 * so we still get the real DSP ack/error.
+	 */
+	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return;
+
+	pkt = p;
+	param = p + APR_HDR_SIZE;
+	pdata = p + APR_HDR_SIZE + sizeof(*param);
+	pl = p + APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata);
+	memcpy(pl, &cfg, sizeof(cfg));
+
+	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					   APR_HDR_LEN(APR_HDR_SIZE),
+					   APR_PKT_VER);
+	pkt->hdr.pkt_size = pkt_size;
+	pkt->hdr.src_port = 0;
+	pkt->hdr.dest_port = 0;
+	pkt->hdr.token = AFE_CLK_TOKEN;
+	pkt->hdr.opcode = AFE_PORT_CMD_SET_PARAM_V2;
+
+	param->port_id = AFE_PORT_ID_QUINARY_MI2S_RX;
+	param->payload_size = sizeof(*pdata) + sizeof(cfg);
+	param->payload_address_lsw = 0x00;
+	param->payload_address_msw = 0x00;
+	param->mem_map_handle = 0x00;
+	pdata->module_id = AFE_MODULE_AUDIO_DEV_INTERFACE;
+	pdata->param_id = AFE_PARAM_ID_LPASS_CORE_SHARED_CLOCK_CONFIG;
+	pdata->param_size = sizeof(cfg);
+
+	ret = afe_apr_send_pkt(afe, pkt, NULL, AFE_PORT_CMD_SET_PARAM_V2);
+	dev_info(afe->dev, "DBG LPASS core shared clk enable=1 rc=%d\n", ret);
+}
+
 static int q6afe_probe(struct apr_device *adev)
 {
 	struct q6afe *afe;
 	struct device *dev = &adev->dev;
+	int ret;
 
 	afe = devm_kzalloc(dev, sizeof(*afe), GFP_KERNEL);
 	if (!afe)
@@ -1914,6 +1991,12 @@ static int q6afe_probe(struct apr_device *adev)
 	spin_lock_init(&afe->port_list_lock);
 
 	dev_set_drvdata(dev, afe);
+
+	ret = devm_delayed_work_autocancel(dev, &afe->core_clk_work,
+					   q6afe_core_shared_clk_work);
+	if (ret)
+		return ret;
+	schedule_delayed_work(&afe->core_clk_work, msecs_to_jiffies(3000));
 
 	return devm_of_platform_populate(dev);
 }
