@@ -1970,6 +1970,46 @@ static void q6afe_core_shared_clk_work(struct work_struct *work)
 
 	ret = afe_apr_send_pkt(afe, pkt, NULL, AFE_PORT_CMD_SET_PARAM_V2);
 	dev_info(afe->dev, "DBG LPASS core shared clk enable=1 rc=%d\n", ret);
+
+	/*
+	 * EXPERIMENT B (2026-07-03): also try the newer-generation LPASS core
+	 * HW vote (AFE_CMD_REMOTE_LPASS_CORE_HW_VOTE_REQUEST) for each known
+	 * block id (2=AVTIMER, 3=MACRO, 4=DCODEC). Inline build because
+	 * q6afe_vote_lpass_core_hw() expects a child dev. On this ADSP.VT.3.0
+	 * AVS the API may be unsupported -> the per-block rc is the datum.
+	 */
+	{
+		uint32_t blk;
+
+		for (blk = 2; blk <= 4; blk++) {
+			struct afe_cmd_remote_lpass_core_hw_vote_request *vote_cfg;
+			struct apr_pkt *vpkt;
+			int vsize = APR_HDR_SIZE + sizeof(*vote_cfg);
+			void *vp __free(kfree) = kzalloc(vsize, GFP_KERNEL);
+
+			if (!vp)
+				return;
+			vpkt = vp;
+			vote_cfg = vp + APR_HDR_SIZE;
+			vpkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+							APR_HDR_LEN(APR_HDR_SIZE),
+							APR_PKT_VER);
+			vpkt->hdr.pkt_size = vsize;
+			vpkt->hdr.src_port = 0;
+			vpkt->hdr.dest_port = 0;
+			vpkt->hdr.token = blk;
+			vpkt->hdr.opcode = AFE_CMD_REMOTE_LPASS_CORE_HW_VOTE_REQUEST;
+			vote_cfg->hw_block_id = blk;
+			strscpy(vote_cfg->client_name, "fp3slim",
+				sizeof(vote_cfg->client_name));
+
+			ret = afe_apr_send_pkt(afe, vpkt, NULL,
+				AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST);
+			dev_info(afe->dev,
+				 "DBG LPASS core HW vote block=%u rc=%d\n",
+				 blk, ret);
+		}
+	}
 }
 
 static int q6afe_probe(struct apr_device *adev)
