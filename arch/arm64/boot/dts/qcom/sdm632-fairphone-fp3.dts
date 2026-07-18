@@ -90,11 +90,38 @@
 };
 
 &cci {
+	pinctrl-names = "default";
+	pinctrl-0 = <&cci0_default>, <&camss_mclk0_default>;
+
 	status = "okay";
 };
 
 &cci_i2c0 {
 	/* Sony IMX363 (rear) @ 0x10 */
+	camera@10 {
+		compatible = "sony,imx363";
+		reg = <0x10>;
+
+		reset-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clock-rates = <24000000>;
+		clock-frequency = <24000000>;
+
+		vana-supply = <&pm8953_l22>;	/* 2.8V analog */
+		vdig-supply = <&pm8953_l2>;	/* 1.2V digital core */
+		vif-supply = <&vreg_cam_io_1p8>;	/* 1.8V IO */
+
+		port {
+			imx363_ep: endpoint {
+				data-lanes = <0 1 2 3>;
+				link-frequencies = /bits/ 64
+					<636000000 321000000>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
+	};
 
 	eeprom@50 {
 		compatible = "belling,bl24s64", "atmel,24c64";
@@ -107,7 +134,24 @@
 };
 
 &cci_i2c1 {
-	/* Samsung S5K4H7YX (front) @ 0x10 */
+	/* Samsung S5K4H7YX (front) @ 0x10 — TODO: needs s5k4h7 driver */
+};
+
+&camss {
+	vdda-supply = <&pm8953_s3>;
+
+	ports {
+		port@0 {
+			reg = <0>;
+			csiphy0_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&imx363_ep>;
+			};
+		};
+	};
+
+	status = "okay";
 };
 
 &gpu {
