@@ -140,6 +140,8 @@
 &camss {
 	vdda-supply = <&pm8953_s3>;
 
+	status = "okay";
+
 	ports {
 		port@0 {
 			reg = <0>;
@@ -150,8 +152,6 @@
 			};
 		};
 	};
-
-	status = "okay";
 };
 
 &gpu {
