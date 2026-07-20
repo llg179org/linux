@@ -1068,8 +1068,13 @@ static int imx363_power_on(struct device *dev)
 	/* Release reset (XCLR high on this board). */
 	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
 
-	/* Sensor internal boot + register-access-ready delay. */
-	usleep_range(10000, 12000);
+	/*
+	 * Sensor internal boot + register-access-ready delay. On the FP3 the
+	 * GPIO-switched camera rails settle slowly; the IMX363 only ACKs on
+	 * I2C ~150 ms after power-up, so the original ~10 ms was far too short
+	 * and every chip-id read timed out. Give it a generous margin.
+	 */
+	msleep(200);
 
 	return 0;
 }
@@ -1131,9 +1136,20 @@ static int imx363_identify_module(struct imx363 *imx363)
 	struct i2c_client *client = v4l2_get_subdevdata(&imx363->sd);
 	int ret;
 	u64 val;
+	int tries;
 
-	ret = cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
-		       &val, NULL);
+	/*
+	 * The very first I2C transaction after power-up reliably times out on
+	 * the FP3 (the sensor / CCI needs a warm-up access), while every
+	 * subsequent read succeeds. Retry a few times before giving up.
+	 */
+	for (tries = 0; tries < 5; tries++) {
+		ret = cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
+			       &val, NULL);
+		if (!ret)
+			break;
+		usleep_range(5000, 6000);
+	}
 	if (ret) {
 		dev_err(&client->dev, "failed to read chip id %x\n",
 			IMX363_CHIP_ID);
