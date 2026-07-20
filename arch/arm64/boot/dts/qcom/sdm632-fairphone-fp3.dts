@@ -97,10 +97,10 @@
 };
 
 &cci_i2c0 {
-	/* Sony IMX363 (rear) @ 0x10 */
-	camera@10 {
+	/* Sony IMX363 (rear) @ 0x1a (SLASEL strapped high on FP3) */
+	camera@1a {
 		compatible = "sony,imx363";
-		reg = <0x10>;
+		reg = <0x1a>;
 
 		reset-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
 
