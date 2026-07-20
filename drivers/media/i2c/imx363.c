@@ -1047,17 +1047,29 @@ static int imx363_power_on(struct device *dev)
 		return ret;
 	}
 
-	usleep_range(400, 600);
+	/* Let the power rails settle before starting the input clock. */
+	usleep_range(1000, 1500);
 
-	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
-
+	/*
+	 * IMX363 requires INCK (MCLK) to be running and stable *before*
+	 * XCLR (reset) is released, otherwise the sensor never boots and
+	 * the first I2C access to the chip-id register times out.
+	 */
 	ret = clk_prepare_enable(imx363->clk);
 	if (ret) {
 		dev_err(dev, "failed to enable clock\n");
 		regulator_bulk_disable(IMX363_NUM_SUPPLIES, imx363->supplies);
+		return ret;
 	}
 
-	usleep_range(1000, 1200);
+	/* Wait for INCK to stabilise. */
+	usleep_range(1000, 1500);
+
+	/* Release reset (XCLR high on this board). */
+	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
+
+	/* Sensor internal boot + register-access-ready delay. */
+	usleep_range(10000, 12000);
 
 	return 0;
 }
@@ -1289,11 +1301,28 @@ static int imx363_get_regulators(struct imx363 *imx363,
 {
 	unsigned int i;
 
+	int ret;
+
 	for (i = 0; i < IMX363_NUM_SUPPLIES; i++)
 		imx363->supplies[i].supply = imx363_supply_name[i];
 
-	return devm_regulator_bulk_get(&client->dev,
+	ret = devm_regulator_bulk_get(&client->dev,
 				    IMX363_NUM_SUPPLIES, imx363->supplies);
+	if (ret)
+		return ret;
+
+	/*
+	 * vdig (index 1) is a shared PMIC LDO that otherwise sits at its
+	 * 0.975V minimum; the IMX363 digital core needs 1.175V or it never
+	 * boots and the chip-id read times out. Pin it explicitly.
+	 */
+	ret = regulator_set_voltage(imx363->supplies[1].consumer,
+				    1175000, 1175000);
+	if (ret)
+		dev_warn(&client->dev,
+			 "failed to set vdig to 1.175V: %d\n", ret);
+
+	return 0;
 }
 
 static int imx363_probe(struct i2c_client *client)
