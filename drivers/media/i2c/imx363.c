@@ -1076,6 +1076,26 @@ static int imx363_power_on(struct device *dev)
 	 */
 	msleep(200);
 
+	/*
+	 * Warm up the I2C link before returning. The very first transaction
+	 * after power-up reliably times out on this board (slow GPIO-switched
+	 * rails); power_on() runs on every runtime-PM resume, so absorb that
+	 * cold transaction here - otherwise the first register writes the
+	 * caller issues to start streaming time out and the CAMSS VFE never
+	 * receives frames ("Failed to start streaming").
+	 */
+	{
+		u64 val;
+		int tries;
+
+		for (tries = 0; tries < 5; tries++) {
+			if (!cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
+				      &val, NULL))
+				break;
+			usleep_range(5000, 6000);
+		}
+	}
+
 	return 0;
 }
 
