@@ -1037,7 +1037,8 @@ static int imx363_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx363 *imx363 = to_imx363(sd);
-	int ret;
+	int ret, tries;
+	u64 val;
 
 	ret = regulator_bulk_enable(IMX363_NUM_SUPPLIES,
 				    imx363->supplies);
@@ -1079,21 +1080,17 @@ static int imx363_power_on(struct device *dev)
 	/*
 	 * Warm up the I2C link before returning. The very first transaction
 	 * after power-up reliably times out on this board (slow GPIO-switched
-	 * rails); power_on() runs on every runtime-PM resume, so absorb that
-	 * cold transaction here - otherwise the first register writes the
-	 * caller issues to start streaming time out and the CAMSS VFE never
-	 * receives frames ("Failed to start streaming").
+	 * rails); power_on() runs on every runtime-PM resume -- not just at
+	 * probe -- so absorb that cold transaction here. Otherwise the first
+	 * register writes the caller issues to start streaming time out and
+	 * the CAMSS VFE never receives frames ("Failed to start streaming"),
+	 * which is externally visible as the viewfinder going blank after
+	 * the screen is locked and unlocked while the camera is open.
 	 */
-	{
-		u64 val;
-		int tries;
-
-		for (tries = 0; tries < 5; tries++) {
-			if (!cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
-				      &val, NULL))
-				break;
-			usleep_range(5000, 6000);
-		}
+	for (tries = 0; tries < 5; tries++) {
+		if (!cci_read(imx363->regmap, IMX363_REG_CHIP_ID, &val, NULL))
+			break;
+		usleep_range(5000, 6000);
 	}
 
 	return 0;
@@ -1156,20 +1153,12 @@ static int imx363_identify_module(struct imx363 *imx363)
 	struct i2c_client *client = v4l2_get_subdevdata(&imx363->sd);
 	int ret;
 	u64 val;
-	int tries;
 
 	/*
-	 * The very first I2C transaction after power-up reliably times out on
-	 * the FP3 (the sensor / CCI needs a warm-up access), while every
-	 * subsequent read succeeds. Retry a few times before giving up.
+	 * power_on() already retries a warm-up read to absorb the FP3's cold
+	 * first-I2C-transaction timeout, so a single read here is enough.
 	 */
-	for (tries = 0; tries < 5; tries++) {
-		ret = cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
-			       &val, NULL);
-		if (!ret)
-			break;
-		usleep_range(5000, 6000);
-	}
+	ret = cci_read(imx363->regmap, IMX363_REG_CHIP_ID, &val, NULL);
 	if (ret) {
 		dev_err(&client->dev, "failed to read chip id %x\n",
 			IMX363_CHIP_ID);
