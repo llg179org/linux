@@ -1077,13 +1077,25 @@ static int imx363_power_on(struct device *dev)
 	msleep(200);
 
 	/*
-	 * No warm-up I2C read is needed here: the 200 ms settle above plus the
-	 * time the caller spends configuring the stream is enough for the slow
-	 * GPIO-switched rails to come up, so the first I2C transaction the
-	 * caller issues (chip-id at probe, or the streaming register writes on a
-	 * runtime-PM resume) succeeds. Verified over 8/8 cold stream-starts with
-	 * zero "Failed to start streaming" / -110 timeouts.
+	 * Warm up the I2C link before returning. The very first transaction
+	 * after power-up reliably times out on this board (slow GPIO-switched
+	 * rails); power_on() runs on every runtime-PM resume, so absorb that
+	 * cold transaction here - otherwise the first register writes the
+	 * caller issues to start streaming time out and the CAMSS VFE never
+	 * receives frames ("Failed to start streaming").
 	 */
+	{
+		u64 val;
+		int tries;
+
+		for (tries = 0; tries < 5; tries++) {
+			if (!cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
+				      &val, NULL))
+				break;
+			usleep_range(5000, 6000);
+		}
+	}
+
 	return 0;
 }
 
