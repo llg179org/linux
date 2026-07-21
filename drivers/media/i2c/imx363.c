@@ -12,7 +12,6 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
-#include <linux/unaligned.h>
 
 #define IMX363_REG_MODE_SELECT	CCI_REG8(0x0100)
 #define IMX363_MODE_STANDBY		0x00
@@ -278,9 +277,9 @@ static const struct cci_reg_sequence mode_common_regs[] = {
 	// { CCI_REG8(0x7928), 0x04 },
 	// { CCI_REG8(0x7929), 0x04 },
 	// { CCI_REG8(0x793F), 0x03 },
-	
+
 	// present in imx258. not present in android downstream logs. doesnt seem to affect output.
-	// {IMX363_REG_SCALE_MODE_EXT, 0}, 
+	// {IMX363_REG_SCALE_MODE_EXT, 0},
 	// {IMX363_REG_SCALE_M_EXT, 16},
 	// {IMX363_REG_FORCE_FD_SUM, 1},
 	// {IMX363_REG_FRM_LENGTH_CTL, 0},
@@ -293,7 +292,7 @@ static const struct cci_reg_sequence mode_common_regs[] = {
 	// {IMX363_REG_PHASE_PIX_OUTEN, 0},
 	// {IMX363_REG_PDPIX_DATA_RATE, 0},
 	// {IMX363_REG_HDR, 0},
-	
+
 	// Seems important. Probably will work even without specifying these. But let's just set it anyway.
 	// {IMX363_REG_CSI_DT_FMT, 0x0a0a},
 	// {IMX363_REG_LINE_LENGTH_PCK, IMX363_PPL_DEFAULT},
@@ -1047,43 +1046,18 @@ static int imx363_power_on(struct device *dev)
 		return ret;
 	}
 
-	/* Let the power rails settle before starting the input clock. */
-	usleep_range(1000, 1500);
+	usleep_range(400, 600);
 
-	/*
-	 * IMX363 requires INCK (MCLK) to be running and stable *before*
-	 * XCLR (reset) is released, otherwise the sensor never boots and
-	 * the first I2C access to the chip-id register times out.
-	 */
+	gpiod_set_value_cansleep(imx363->reset_gpio, 0);
+
 	ret = clk_prepare_enable(imx363->clk);
 	if (ret) {
 		dev_err(dev, "failed to enable clock\n");
 		regulator_bulk_disable(IMX363_NUM_SUPPLIES, imx363->supplies);
-		return ret;
 	}
 
-	/* Wait for INCK to stabilise. */
-	usleep_range(1000, 1500);
+	usleep_range(9000, 9100);
 
-	/* Release reset (XCLR high on this board). */
-	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
-
-	/*
-	 * Sensor internal boot + register-access-ready delay. On the FP3 the
-	 * GPIO-switched camera rails settle slowly; the IMX363 only ACKs on
-	 * I2C ~150 ms after power-up, so the original ~10 ms was far too short
-	 * and every chip-id read timed out. Give it a generous margin.
-	 */
-	msleep(200);
-
-	/*
-	 * No warm-up I2C read is needed here: the 200 ms settle above plus the
-	 * time the caller spends configuring the stream is enough for the slow
-	 * GPIO-switched rails to come up, so the first I2C transaction the
-	 * caller issues (chip-id at probe, or the streaming register writes on a
-	 * runtime-PM resume) succeeds. Verified over 8/8 cold stream-starts with
-	 * zero "Failed to start streaming" / -110 timeouts.
-	 */
 	return 0;
 }
 
@@ -1094,7 +1068,7 @@ static int imx363_power_off(struct device *dev)
 
 	clk_disable_unprepare(imx363->clk);
 
-	gpiod_set_value_cansleep(imx363->reset_gpio, 0);
+	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
 
 	regulator_bulk_disable(IMX363_NUM_SUPPLIES, imx363->supplies);
 
@@ -1144,20 +1118,9 @@ static int imx363_identify_module(struct imx363 *imx363)
 	struct i2c_client *client = v4l2_get_subdevdata(&imx363->sd);
 	int ret;
 	u64 val;
-	int tries;
 
-	/*
-	 * The very first I2C transaction after power-up reliably times out on
-	 * the FP3 (the sensor / CCI needs a warm-up access), while every
-	 * subsequent read succeeds. Retry a few times before giving up.
-	 */
-	for (tries = 0; tries < 5; tries++) {
-		ret = cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
-			       &val, NULL);
-		if (!ret)
-			break;
-		usleep_range(5000, 6000);
-	}
+	ret = cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
+		       &val, NULL);
 	if (ret) {
 		dev_err(&client->dev, "failed to read chip id %x\n",
 			IMX363_CHIP_ID);
@@ -1325,28 +1288,11 @@ static int imx363_get_regulators(struct imx363 *imx363,
 {
 	unsigned int i;
 
-	int ret;
-
 	for (i = 0; i < IMX363_NUM_SUPPLIES; i++)
 		imx363->supplies[i].supply = imx363_supply_name[i];
 
-	ret = devm_regulator_bulk_get(&client->dev,
+	return devm_regulator_bulk_get(&client->dev,
 				    IMX363_NUM_SUPPLIES, imx363->supplies);
-	if (ret)
-		return ret;
-
-	/*
-	 * vdig (index 1) is a shared PMIC LDO that otherwise sits at its
-	 * 0.975V minimum; the IMX363 digital core needs 1.175V or it never
-	 * boots and the chip-id read times out. Pin it explicitly.
-	 */
-	ret = regulator_set_voltage(imx363->supplies[1].consumer,
-				    1175000, 1175000);
-	if (ret)
-		dev_warn(&client->dev,
-			 "failed to set vdig to 1.175V: %d\n", ret);
-
-	return 0;
 }
 
 static int imx363_probe(struct i2c_client *client)

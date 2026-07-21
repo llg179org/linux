@@ -147,7 +147,7 @@
 		orientation = <1>;
 		rotation = <270>;
 
-		reset-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 40 GPIO_ACTIVE_LOW>;
 
 		clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
 		assigned-clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
