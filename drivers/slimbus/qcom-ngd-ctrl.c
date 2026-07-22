@@ -1216,6 +1216,74 @@ static void qcom_slim_ngd_setup(struct qcom_slim_ngd_ctrl *ctrl)
 	writel_relaxed(cfg, ctrl->ngd->base);
 }
 
+/*
+ * EXPERIMENT 2026-07-23 (REFCLK) — a SLIMbus SLAVE-oldali orak felvoltolasa.
+ *
+ * MERES ami ide vezetett (clk_summary a futo pmOS-en):
+ *     bb_clk1      enable_cnt = 0   <- a SLIMbus 19.2 MHz referencia
+ *     div_clk2     enable_cnt = 0   <- downstream innen jon a codec MCLK
+ *     wcd-mclk     enable_cnt = 0   <- a WCD9326 9.6 MHz MCLK-ja
+ * Vagyis EGYETLEN fogyaszto sem szavaz ezekre az orakra. A slim-ngd DT-node
+ * mar deklaralja a "slimbus_ref"-et (BB_CLK1), de a mainline driver sosem
+ * keri el; a codec sajat orait pedig a wcd9335 driver kapcsolna be -- az
+ * viszont csak laddr utan probe-ol. Kor-fuggoseg.
+ *
+ * HIPOTEZIS: a framer talan ELINDUL, de a slave nem tud valaszolni az
+ * enumeration/capability uzenetre sajat MCLK nelkul -> a framer feladja ->
+ * INTF_STAT FS marad 0. Ez osszefer az ADSP-oldali "capability-wait = -2
+ * TIMEOUT" leletttel, es NEM ugyanaz, mint a mar kizart framer-BELSO ora
+ * (folyt.128d: CLK_OFF=0, LPASS-CC byte-azonos) -- az a MASTER oldal orja.
+ *
+ * PASS: INTF_STAT != 0, vagy NGD_STATUS & NGD_LADDR, vagy a capability
+ * exchange nem timeoutol. FAIL: valtozatlan timeout -> a slave-ora is marker.
+ */
+static void qcom_slim_ngd_refclk_vote(struct qcom_slim_ngd_ctrl *ctrl)
+{
+	struct device_node *np = ctrl->dev->of_node;
+	struct device_node *slim1, *codec;
+	static const char * const codec_clks[] = { "mclk", "slimbus" };
+	struct clk *c;
+	int i, ret;
+
+	c = of_clk_get_by_name(np, "slimbus_ref");
+	if (IS_ERR(c)) {
+		dev_info(ctrl->dev, "DBG REFCLK: slimbus_ref get -> %ld\n",
+			 PTR_ERR(c));
+	} else {
+		ret = clk_prepare_enable(c);
+		dev_info(ctrl->dev, "DBG REFCLK: slimbus_ref rate=%lu enable=%d\n",
+			 clk_get_rate(c), ret);
+	}
+
+	/* slim@1 / codec@1,0 — a wcd9335 gyerek-node, ami meg nem probe-olt */
+	slim1 = of_get_child_by_name(np, "slim");
+	if (!slim1) {
+		dev_info(ctrl->dev, "DBG REFCLK: nincs slim@1 gyerek-node\n");
+		return;
+	}
+	codec = of_get_child_by_name(slim1, "codec");
+	if (!codec) {
+		dev_info(ctrl->dev, "DBG REFCLK: nincs codec gyerek-node\n");
+		of_node_put(slim1);
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(codec_clks); i++) {
+		c = of_clk_get_by_name(codec, codec_clks[i]);
+		if (IS_ERR(c)) {
+			dev_info(ctrl->dev, "DBG REFCLK: codec %s get -> %ld\n",
+				 codec_clks[i], PTR_ERR(c));
+			continue;
+		}
+		ret = clk_prepare_enable(c);
+		dev_info(ctrl->dev, "DBG REFCLK: codec %s rate=%lu enable=%d\n",
+			 codec_clks[i], clk_get_rate(c), ret);
+	}
+
+	of_node_put(codec);
+	of_node_put(slim1);
+}
+
 static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 {
 	enum qcom_slim_ngd_state cur_state = ctrl->state;
@@ -1285,7 +1353,20 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 	writel_relaxed(rx_msgq|SLIM_RX_MSGQ_TIMEOUT_VAL,
 				ngd->base + NGD_RX_MSGQ_CFG);
 	qcom_slim_ngd_setup(ctrl);
-	dev_info(ctrl->dev, "DBG power_up: NGD setup done, waiting for capability (reconf)\n");
+	/*
+	 * UJ MARKER (2026-07-23): a NGD_CFG.ENABLE bit HARDVERESEN onmagat torli,
+	 * ha a busz nincs framelve (userspace-mereskkel bizonyitva: beirva 0x1 ->
+	 * <1 ms-en belul 0x1 olvasodik vissza es NGD_STATUS 0x40c->0x40d, majd
+	 * ~50 ms-en belul mindketto visszaesik). Ezert a "CFG=0x0" a timeout-
+	 * dumpban NEM eldobott iras. Ez egyben INGYENES, AP-oldali proxy arra,
+	 * hogy jar-e a busz-ora: ha az ENABLE MEGTART, a busz framelve van.
+	 */
+	dev_info(ctrl->dev, "DBG power_up: NGD setup done; CFG t+0=0x%08x\n",
+		 readl_relaxed(ngd->base + NGD_CFG));
+	usleep_range(50000, 51000);
+	dev_info(ctrl->dev, "DBG power_up: CFG t+50ms=0x%08x STATUS=0x%08x (ENABLE megtart? = busz framelve)\n",
+		 readl_relaxed(ngd->base + NGD_CFG),
+		 readl_relaxed(ngd->base + NGD_STATUS));
 
 	/*
 	 * EXPERIMENT 2026-06-30 (#1, boot-safe v2): keep the single 1s wait (the
@@ -1620,7 +1701,7 @@ static int of_qcom_slim_ngd_register(struct device *parent,
 			kfree(ngd);
 			return ret;
 		}
-		ngd->pdev->dev.of_node = node;
+		ngd->pdev->dev.of_node = of_node_get(node);
 		ctrl->ngd = ngd;
 
 		ret = platform_device_add(ngd->pdev);
@@ -1729,6 +1810,8 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
 		ret = dev_err_probe(dev, PTR_ERR(ctrl->pdr), "Failed to init PDR handle\n");
 		goto err_destroy_mwq;
 	}
+
+	qcom_slim_ngd_refclk_vote(ctrl);
 
 	ret = of_qcom_slim_ngd_register(dev, ctrl);
 	if (ret)
