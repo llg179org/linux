@@ -97,6 +97,39 @@
 
 #define INIT_MX_RETRIES 10
 #define DEF_RETRY_MS	10
+
+/*
+ * EXPERIMENT (FRMWAKE, 2026-07-22): framer-block registers, offsets taken from
+ * the downstream vendor master-controller driver (slim-msm-ctrl.c:63-83) and
+ * verified live on FP3 (FRM_CFG reads the expected 0x000d0c83 at ctrl->base).
+ * ctrl->base maps the whole 0x2c000 window at 0x0c140000, so these are directly
+ * reachable -- no extra ioremap.
+ *
+ * FRM_WAKEUP is a write-only, self-clearing trigger ("start superframes" /
+ * clock-pause exit). A read-only byte-diff can never observe it, which is why
+ * the two-sided register campaign was structurally blind to it.
+ *
+ * Steady-state poking of FRM_WAKEUP from userspace /dev/mem was NEGATIVE
+ * (1429 pulses, no effect, nothing latched) -- but that test had NO positive
+ * control, and folyt.89/P5 already showed the NGD register file is write-dead
+ * on the dead side. This boot-path version exists to answer the two questions
+ * the userspace test could not:
+ *   1. do AP writes land AT ALL during the ADSP bring-up window (positive
+ *      control: read back the NGD_INT_EN the driver already writes), and
+ *   2. if they do, does the FRM_WAKEUP pulse start the framer.
+ */
+#define FRM_CFG			0x400
+#define FRM_STAT		0x404
+#define FRM_INT_EN		0x410
+#define FRM_INT_STAT		0x414	/* latching */
+#define FRM_INT_CLR		0x418
+#define FRM_WAKEUP		0x41C	/* write-only, self-clearing */
+#define FRM_CLKCTL_DONE		0x420
+#define FRM_IE_STAT		0x430
+#define INTF_CFG		0x600
+#define INTF_STAT		0x604	/* FS/SFS/MS = bit 11/12/13 */
+#define INTF_INT_STAT		0x614	/* latching */
+#define INTF_INT_CLR		0x618
 #define SAT_MAGIC_LSB	0xD9
 #define SAT_MAGIC_MSB	0xC5
 #define SAT_MSG_VER	0x1
@@ -1216,11 +1249,32 @@ static void qcom_slim_ngd_setup(struct qcom_slim_ngd_ctrl *ctrl)
 	writel_relaxed(cfg, ctrl->ngd->base);
 }
 
+/* EXPERIMENT (FRMWAKE): read-only snapshot of the framer block. */
+static void qcom_slim_ngd_frm_dump(struct qcom_slim_ngd_ctrl *ctrl,
+				   const char *when)
+{
+	u32 intf_stat = readl_relaxed(ctrl->base + INTF_STAT);
+
+	dev_info(ctrl->dev,
+		 "DBG FRMWAKE[%s]: FRM_CFG=0x%08x FRM_STAT=0x%08x INTF_CFG=0x%08x INTF_STAT=0x%08x (FS=%d SFS=%d MS=%d) CLKCTL_DONE=0x%08x FRM_IE=0x%08x FRM_INT=0x%08x INTF_INT=0x%08x\n",
+		 when,
+		 readl_relaxed(ctrl->base + FRM_CFG),
+		 readl_relaxed(ctrl->base + FRM_STAT),
+		 readl_relaxed(ctrl->base + INTF_CFG),
+		 intf_stat,
+		 (intf_stat >> 11) & 1, (intf_stat >> 12) & 1,
+		 (intf_stat >> 13) & 1,
+		 readl_relaxed(ctrl->base + FRM_CLKCTL_DONE),
+		 readl_relaxed(ctrl->base + FRM_IE_STAT),
+		 readl_relaxed(ctrl->base + FRM_INT_STAT),
+		 readl_relaxed(ctrl->base + INTF_INT_STAT));
+}
+
 static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 {
 	enum qcom_slim_ngd_state cur_state = ctrl->state;
 	struct qcom_slim_ngd *ngd = ctrl->ngd;
-	u32 laddr, rx_msgq;
+	u32 laddr, rx_msgq, rb;
 	int ret = 0;
 	unsigned long time_left;
 
@@ -1280,12 +1334,48 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 	reinit_completion(&ctrl->reconf);
 
 	writel_relaxed(DEF_NGD_INT_MASK, ngd->base + NGD_INT_EN);
+
+	/*
+	 * EXPERIMENT (FRMWAKE) part 1 -- POSITIVE CONTROL, no extra write.
+	 * Read back the NGD_INT_EN the driver just wrote. This is the control the
+	 * userspace /dev/mem test lacked: if this reads back 0 instead of
+	 * DEF_NGD_INT_MASK then NO AP write lands in this block during the
+	 * bring-up window either, and every "force the framer from the AP" idea
+	 * is dead on principle -- the FRM_WAKEUP result below would be
+	 * meaningless rather than informative.
+	 */
+	rb = readl_relaxed(ngd->base + NGD_INT_EN);
+	dev_info(ctrl->dev,
+		 "DBG FRMWAKE[posctl]: NGD_INT_EN wrote=0x%08x readback=0x%08x -> AP writes %s\n",
+		 DEF_NGD_INT_MASK, rb,
+		 rb == DEF_NGD_INT_MASK ? "LAND" : "DROPPED");
+
 	rx_msgq = readl_relaxed(ngd->base + NGD_RX_MSGQ_CFG);
 
 	writel_relaxed(rx_msgq|SLIM_RX_MSGQ_TIMEOUT_VAL,
 				ngd->base + NGD_RX_MSGQ_CFG);
 	qcom_slim_ngd_setup(ctrl);
 	dev_info(ctrl->dev, "DBG power_up: NGD setup done, waiting for capability (reconf)\n");
+
+	/*
+	 * EXPERIMENT (FRMWAKE) part 2 -- the pulse itself, fired inside the ADSP
+	 * bring-up window (the userspace test could only reach a 35h-old
+	 * steady-state system, where the framer block may simply not be clocked).
+	 *
+	 * Bounded and boot-safe by construction: three MMIO writes and one 5ms
+	 * sleep, no loop. (A previous 10x retry loop in this path hard-hung boot
+	 * and left slot_b unbootable -- do not reintroduce one.) The 5ms follows
+	 * the vendor comment at slim-msm-ctrl.c:556: at gear 10 a superframe is
+	 * 250us, so this waits ~20 superframes.
+	 */
+	qcom_slim_ngd_frm_dump(ctrl, "pre");
+	writel_relaxed(0xFFFFFFFF, ctrl->base + FRM_INT_CLR);
+	writel_relaxed(0xFFFFFFFF, ctrl->base + INTF_INT_CLR);
+	writel_relaxed(1, ctrl->base + FRM_WAKEUP);
+	/* Ensure the wakeup write reaches the framer before we sample it. */
+	mb();
+	usleep_range(4950, 5000);
+	qcom_slim_ngd_frm_dump(ctrl, "post");
 
 	/*
 	 * EXPERIMENT 2026-06-30 (#1, boot-safe v2): keep the single 1s wait (the
@@ -1304,6 +1394,13 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 		dev_err(ctrl->dev,
 			"capability exchange timed-out STATUS=0x%x CFG=0x%x INT_STAT=0x%x\n",
 			st, cfg, ist);
+		/*
+		 * EXPERIMENT (FRMWAKE) part 3: sample the framer once more after
+		 * the 1s capability wait. The latching FRM_INT_STAT/INTF_INT_STAT
+		 * were cleared just before the pulse, so any bit set here proves
+		 * the pulse caused a transient event even if FS fell back to 0.
+		 */
+		qcom_slim_ngd_frm_dump(ctrl, "timeout");
 		return -ETIMEDOUT;
 	}
 
