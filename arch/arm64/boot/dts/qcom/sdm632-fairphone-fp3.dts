@@ -535,3 +535,127 @@
 	vddpa-supply = <&pm8953_l9>;
 	vdddig-supply = <&pm8953_l5>;
 };
+
+/*
+ * Fairphone 3 audio: WCD9335 codec over SLIMbus.
+ *
+ * The SLIMbus NGD controller uses the standard qcom,slim-ngd-v1.5.0 binding
+ * (defined for MSM8996; the msm8953 NGD is the same hardware generation). The
+ * FP3-specific node instantiation below -- the NGD/BAM addresses and the
+ * WCD9335 codec setup (reset/interrupt pinctrl, MCLK, regulators, channels) --
+ * is adapted from Bert Karwatzki's working Fairphone 3 configuration; no other
+ * msm8953 board in-tree instantiates the SLIMbus NGD.
+ * Link: https://lkml.iu.edu/hypermail/linux/kernel/2502.1/00985.html
+ *
+ * These plug into the msm8953 q6afe / q6routing / sound-card infrastructure in
+ * msm8953.dtsi (authored by Trịnh Duy Mạnh); those nodes are only referenced
+ * here by label, their authorship preserved in that file's history.
+ */
+&tlmm {
+	wcd_intr_default: wcd-intr-default-state {
+		pins = "gpio73";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
+	};
+
+	cdc_reset_active: cdc-reset-active-state {
+		pins = "gpio67";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-down;
+		output-high;
+	};
+};
+
+&pm8953_gpios {
+	tasha_mclk_default: tasha-mclk-default-state {
+		pins = "gpio1";
+		function = "func1";
+		drive-strength = <2>;
+		power-source = <0>;
+		bias-disable;
+		output-low;
+	};
+};
+
+&soc {
+	/* Bert Karwatzki working config: real codec MCLK = PMIC gpio1 gated
+	 * clock from RPM DIV_CLK2 (9.6 MHz), NOT a fake fixed-factor-clock. */
+	divclk1_cdc: divclk1 {
+		compatible = "gpio-gate-clock";
+		clocks = <&rpmcc RPM_SMD_DIV_CLK2>;
+		#clock-cells = <0>;
+		enable-gpios = <&pm8953_gpios 1 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "active", "sleep";
+		pinctrl-0 = <&tasha_mclk_default>;
+		pinctrl-1 = <&tasha_mclk_default>;
+	};
+
+	wcd_vout_1p8: wcd-vout-1p8 {
+		compatible = "regulator-fixed";
+		regulator-name = "wcd-vout-1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&tlmm 50 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	slimbam: dma-controller@c104000 {
+		compatible = "qcom,bam-v1.7.0";
+		qcom,controlled-remotely;
+		reg = <0x0c104000 0x2a000>;
+		interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>;
+		#dma-cells = <1>;
+		qcom,ee = <1>;
+		qcom,num-ees = <3>;
+		num-channels = <23>;
+	};
+
+	slim_msm: slim-ngd@c140000 {
+		compatible = "qcom,slim-ngd-v1.5.0";
+		reg = <0x0c140000 0x2c000>;
+		interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
+		dmas = <&slimbam 3>, <&slimbam 4>;
+		dma-names = "rx", "tx";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		slim@1 {
+			reg = <1>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+
+			tasha_ifd: ifd@0,0 {
+				compatible = "slim217,1a0";
+				reg = <0 0>;
+			};
+
+			wcd9335: codec@1,0 {
+				compatible = "slim217,1a0";
+				reg = <1 0>;
+				slim-ifc-dev = <&tasha_ifd>;
+				#sound-dai-cells = <1>;
+				interrupt-parent = <&tlmm>;
+				interrupts = <73 IRQ_TYPE_LEVEL_HIGH>,
+					     <74 IRQ_TYPE_LEVEL_HIGH>;
+				interrupt-names = "intr1", "intr2";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				reset-gpios = <&tlmm 67 GPIO_ACTIVE_LOW>;
+				pinctrl-0 = <&cdc_reset_active &wcd_intr_default>;
+				pinctrl-names = "default";
+				clock-names = "mclk", "slimbus";
+				clocks = <&divclk1_cdc>, <&rpmcc RPM_SMD_DIV_CLK2>;
+				vdd-buck-supply = <&wcd_vout_1p8>;
+				vdd-buck-sido-supply = <&wcd_vout_1p8>;
+				vdd-tx-supply = <&wcd_vout_1p8>;
+				vdd-rx-supply = <&wcd_vout_1p8>;
+				vdd-io-supply = <&wcd_vout_1p8>;
+				vdd-micbias-supply = <&vph_pwr>;
+			};
+		};
+	};
+};
