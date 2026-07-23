@@ -1584,6 +1584,17 @@ static void slim_pd_status(int state, char *svc_path, void *priv)
 {
 	struct qcom_slim_ngd_ctrl *ctrl = (struct qcom_slim_ngd_ctrl *)priv;
 
+	/*
+	 * DBG PDR (2026-07-23): a capability-bring-up az audio_pd PD UP-jától függ.
+	 * A qrtr-lookup NEM mutat servreg-notifier (0x42) szolgáltatást -> gyanú,
+	 * hogy ez a callback SOHA nem fut UP-pal (az audio_pd állapot sosem jön meg).
+	 * Ez a print eldönti: ha nincs "state=UP svc=.../audio_pd" sor, a PD sosem
+	 * áll fel -> ez a capability-timeout oka (Bert-nél az audio_pd UP volt).
+	 */
+	dev_info(ctrl->dev, "DBG PDR: slim_pd_status state=%d (UP=%d DOWN=%d) svc='%s'\n",
+		 state, SERVREG_SERVICE_STATE_UP, SERVREG_SERVICE_STATE_DOWN,
+		 svc_path ? svc_path : "(null)");
+
 	qcom_slim_ngd_ssr_pdr_notify(ctrl, state);
 }
 static int of_qcom_slim_ngd_register(struct device *parent,
