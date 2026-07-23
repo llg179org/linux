@@ -324,8 +324,14 @@
 
 	status = "okay";
 
-	/* FP3 does not use the codec on PM8953 */
-	/delete-property/ audio-routing;
+	/*
+	 * Replace the inherited PM8953-codec routing: the WCD9335's MCLK supply
+	 * widget has no in-codec route, so the board must pull it in. RX_BIAS is
+	 * a dependency of every RX interpolator DAC, so "RX_BIAS" -> "MCLK" keeps
+	 * the external MCLK (divclk1) enabled for the whole playback path.
+	 * (Same single route every wcd9335 board uses, e.g. apq8096-db820c.)
+	 */
+	audio-routing = "RX_BIAS", "MCLK";
 	/delete-node/ primary-mi2s-dai-link;
 	/delete-node/ tertiary-mi2s-dai-link;
 
@@ -615,8 +621,11 @@
 };
 
 &soc {
-	/* Bert Karwatzki working config: real codec MCLK = PMIC gpio1 gated
-	 * clock from RPM DIV_CLK2 (9.6 MHz), NOT a fake fixed-factor-clock. */
+	/*
+	 * Codec MCLK: PM8953 gpio1-gated clock off RPM DIV_CLK2, exactly as the
+	 * downstream FP3 audio config sources it (the same RPM XO-buffer clock,
+	 * which downstream labels "clk_div_clk2").
+	 */
 	divclk1_cdc: divclk1 {
 		compatible = "gpio-gate-clock";
 		clocks = <&rpmcc RPM_SMD_DIV_CLK2>;
