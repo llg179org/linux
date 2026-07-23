@@ -5,6 +5,7 @@
 /dts-v1/;
 
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/sound/qcom,wcd9335.h>
 #include "sdm632.dtsi"
 #include "pm8953.dtsi"
 #include "pmi632.dtsi"
@@ -341,6 +342,39 @@
 
 		platform {
 			sound-dai = <&q6routing>;
+		};
+	};
+
+	/* WCD9335 over SLIMbus: earpiece/headset playback + mic capture */
+	slim-playback-dai-link {
+		link-name = "SLIM Playback";
+
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9335 AIF1_PB>;
+		};
+	};
+
+	slim-capture-dai-link {
+		link-name = "SLIM Capture";
+
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_TX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9335 AIF1_CAP>;
 		};
 	};
 };
