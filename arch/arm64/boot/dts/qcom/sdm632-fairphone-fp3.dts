@@ -375,3 +375,79 @@
 &zap_shader {
 	firmware-name = "qcom/msm8953/fairphone/fp3/a506_zap.mbn";
 };
+
+/* ===== BERT-REPRO 2026-07-23: FP3 SLIMbus + WCD9335 (a 7.x fánkból, azonos) ===== */
+&tlmm {
+	wcd_intr_default: wcd-intr-default-state {
+		pins = "gpio73";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
+	};
+};
+
+&soc {
+	wcd_mclk: wcd-mclk {
+		compatible = "fixed-factor-clock";
+		#clock-cells = <0>;
+		clocks = <&rpmcc RPM_SMD_BB_CLK1>;
+		clock-div = <2>;
+		clock-mult = <1>;
+	};
+
+	slimbam: dma-controller@c104000 {
+		compatible = "qcom,bam-v1.7.0";
+		qcom,controlled-remotely;
+		reg = <0x0c104000 0x2a000>;
+		interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>;
+		#dma-cells = <1>;
+		qcom,ee = <1>;
+		qcom,num-ees = <2>;
+		num-channels = <31>;
+	};
+
+	slim_msm: slim-ngd@c140000 {
+		compatible = "qcom,slim-ngd-v1.5.0";
+		reg = <0x0c140000 0x2c000>;
+		interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
+		dmas = <&slimbam 3>, <&slimbam 4>;
+		dma-names = "rx", "tx";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		slim@1 {
+			reg = <1>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+
+			tasha_ifd: ifd@0,0 {
+				compatible = "slim217,1a0";
+				reg = <0 0>;
+			};
+
+			wcd9335: codec@1,0 {
+				compatible = "slim217,1a0";
+				reg = <1 0>;
+				slim-ifc-dev = <&tasha_ifd>;
+				#sound-dai-cells = <1>;
+				interrupt-parent = <&tlmm>;
+				interrupts = <73 IRQ_TYPE_LEVEL_HIGH>;
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				reset-gpios = <&tlmm 67 GPIO_ACTIVE_LOW>;
+				pinctrl-0 = <&wcd_intr_default>;
+				pinctrl-names = "default";
+				clock-names = "mclk", "slimbus";
+				clocks = <&wcd_mclk>, <&rpmcc RPM_SMD_BB_CLK1>;
+				vdd-buck-supply = <&pm8953_l5>;
+				vdd-buck-sido-supply = <&pm8953_l5>;
+				vdd-tx-supply = <&pm8953_l5>;
+				vdd-rx-supply = <&pm8953_l5>;
+				vdd-io-supply = <&pm8953_l5>;
+				vdd-micbias-supply = <&pm8953_l13>;
+			};
+		};
+	};
+};
