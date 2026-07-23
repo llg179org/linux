@@ -385,15 +385,47 @@
 		bias-pull-down;
 		input-enable;
 	};
+
+	cdc_reset_active: cdc-reset-active-state {
+		pins = "gpio67";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-down;
+		output-high;
+	};
+};
+
+&pm8953_gpios {
+	tasha_mclk_default: tasha-mclk-default-state {
+		pins = "gpio1";
+		function = "func1";
+		drive-strength = <2>;
+		power-source = <0>;
+		bias-disable;
+		output-low;
+	};
 };
 
 &soc {
-	wcd_mclk: wcd-mclk {
-		compatible = "fixed-factor-clock";
+	/* Bert Karwatzki working config: real codec MCLK = PMIC gpio1 gated
+	 * clock from RPM DIV_CLK2 (9.6 MHz), NOT a fake fixed-factor-clock. */
+	divclk1_cdc: divclk1 {
+		compatible = "gpio-gate-clock";
+		clocks = <&rpmcc RPM_SMD_DIV_CLK2>;
 		#clock-cells = <0>;
-		clocks = <&rpmcc RPM_SMD_BB_CLK1>;
-		clock-div = <2>;
-		clock-mult = <1>;
+		enable-gpios = <&pm8953_gpios 1 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "active", "sleep";
+		pinctrl-0 = <&tasha_mclk_default>;
+		pinctrl-1 = <&tasha_mclk_default>;
+	};
+
+	wcd_vout_1p8: wcd-vout-1p8 {
+		compatible = "regulator-fixed";
+		regulator-name = "wcd-vout-1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&tlmm 50 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
 	};
 
 	slimbam: dma-controller@c104000 {
@@ -403,8 +435,8 @@
 		interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>;
 		#dma-cells = <1>;
 		qcom,ee = <1>;
-		qcom,num-ees = <2>;
-		num-channels = <31>;
+		qcom,num-ees = <3>;
+		num-channels = <23>;
 	};
 
 	slim_msm: slim-ngd@c140000 {
@@ -433,20 +465,22 @@
 				slim-ifc-dev = <&tasha_ifd>;
 				#sound-dai-cells = <1>;
 				interrupt-parent = <&tlmm>;
-				interrupts = <73 IRQ_TYPE_LEVEL_HIGH>;
+				interrupts = <73 IRQ_TYPE_LEVEL_HIGH>,
+					     <74 IRQ_TYPE_LEVEL_HIGH>;
+				interrupt-names = "intr1", "intr2";
 				interrupt-controller;
 				#interrupt-cells = <1>;
 				reset-gpios = <&tlmm 67 GPIO_ACTIVE_LOW>;
-				pinctrl-0 = <&wcd_intr_default>;
+				pinctrl-0 = <&cdc_reset_active &wcd_intr_default>;
 				pinctrl-names = "default";
 				clock-names = "mclk", "slimbus";
-				clocks = <&wcd_mclk>, <&rpmcc RPM_SMD_BB_CLK1>;
-				vdd-buck-supply = <&pm8953_l5>;
-				vdd-buck-sido-supply = <&pm8953_l5>;
-				vdd-tx-supply = <&pm8953_l5>;
-				vdd-rx-supply = <&pm8953_l5>;
-				vdd-io-supply = <&pm8953_l5>;
-				vdd-micbias-supply = <&pm8953_l13>;
+				clocks = <&divclk1_cdc>, <&rpmcc RPM_SMD_DIV_CLK2>;
+				vdd-buck-supply = <&wcd_vout_1p8>;
+				vdd-buck-sido-supply = <&wcd_vout_1p8>;
+				vdd-tx-supply = <&wcd_vout_1p8>;
+				vdd-rx-supply = <&wcd_vout_1p8>;
+				vdd-io-supply = <&wcd_vout_1p8>;
+				vdd-micbias-supply = <&vph_pwr>;
 			};
 		};
 	};
