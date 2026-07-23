@@ -429,6 +429,13 @@ static const struct qcom_pdm_domain_data *sc8280xp_domains[] = {
 	NULL,
 };
 
+static const struct qcom_pdm_domain_data *msm8953_domains[] = {
+	&adsp_audio_pd,
+	&adsp_root_pd,
+	&mpss_root_pd,
+	NULL,
+};
+
 static const struct qcom_pdm_domain_data *sdm660_domains[] = {
 	&adsp_audio_pd,
 	&adsp_root_pd,
@@ -537,8 +544,10 @@ static const struct of_device_id qcom_pdm_domains[] __maybe_unused = {
 	{ .compatible = "qcom,msm8916", .data = NULL, },
 	{ .compatible = "qcom,msm8939", .data = NULL, },
 	{ .compatible = "qcom,msm8974", .data = NULL, },
+	{ .compatible = "qcom,msm8953", .data = msm8953_domains, },
 	{ .compatible = "qcom,msm8996", .data = msm8996_domains, },
 	{ .compatible = "qcom,msm8998", .data = msm8998_domains, },
+	{ .compatible = "qcom,sdm632", .data = msm8953_domains, },
 	{ .compatible = "qcom,qcm2290", .data = qcm2290_domains, },
 	{ .compatible = "qcom,qcm6490", .data = sc7280_domains, },
 	{ .compatible = "qcom,qcs404", .data = qcs404_domains, },
