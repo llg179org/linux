@@ -1629,6 +1629,7 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct qcom_slim_ngd_ctrl *ctrl;
+	u32 quirk_reg;
 	int ret;
 	struct pdr_service *pds;
 
@@ -1647,8 +1648,8 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
 	 * cleared right before the master-capability exchange (see power_up).
 	 */
 	if (!of_property_read_u32(dev->of_node, "qcom,slim-framer-quirk-reg",
-				  &ret) && ret) {
-		ctrl->framer_quirk_reg = devm_ioremap(dev, ret, 4);
+				  &quirk_reg) && quirk_reg) {
+		ctrl->framer_quirk_reg = devm_ioremap(dev, quirk_reg, 4);
 		if (!ctrl->framer_quirk_reg)
 			dev_warn(dev, "failed to map slim-framer-quirk-reg\n");
 	}
