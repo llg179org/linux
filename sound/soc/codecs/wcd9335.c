@@ -4746,6 +4746,14 @@ static void wcd9335_enable_sido_buck(struct snd_soc_component *component)
 static int wcd9335_enable_efuse_sensing(struct snd_soc_component *comp)
 {
 	_wcd9335_codec_enable_mclk(comp, true);
+	/*
+	 * Select efuse sense state 0 before enabling. The downstream driver
+	 * clears this field first; without it the sense never completes on some
+	 * parts (EFUSE_STATUS stays 0), which then breaks SLIMbus data ports.
+	 */
+	snd_soc_component_update_bits(comp,
+				WCD9335_CHIP_TIER_CTRL_EFUSE_CTL,
+				WCD9335_CHIP_TIER_CTRL_EFUSE_SSTATE_MASK, 0x20);
 	snd_soc_component_update_bits(comp,
 				WCD9335_CHIP_TIER_CTRL_EFUSE_CTL,
 				WCD9335_CHIP_TIER_CTRL_EFUSE_EN_MASK,
