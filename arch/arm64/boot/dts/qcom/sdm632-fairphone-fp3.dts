@@ -354,7 +354,37 @@
 			"AMIC2", "MCLK",
 			"AMIC5", "MCLK",
 			"AMIC5", "MIC BIAS3",
-			"AMIC2", "MIC BIAS2";
+			"AMIC2", "MIC BIAS2",
+			/*
+			 * The digital mics are supplies-with-no-route as well, and
+			 * their clock is divided down from MCLK, so they need both.
+			 * Bias mapping mirrors the downstream FP3 audio DT.
+			 */
+			"DMIC0", "MCLK",
+			"DMIC1", "MCLK",
+			"DMIC2", "MCLK",
+			"DMIC3", "MCLK",
+			"DMIC4", "MCLK",
+			"DMIC5", "MCLK",
+			/*
+			 * A DMIC widget is an ADC, not an input, so DAPM will not power
+			 * it from a supply alone - it needs a source endpoint. Downstream
+			 * gets that from the reverse "MIC BIAS<n>" -> "Digital Mic<n>"
+			 * pair, which modern ASoC rejects, so wire the mic widget
+			 * straight to the DMIC instead.
+			 */
+			"DMIC0", "Digital Mic0",
+			"DMIC1", "Digital Mic1",
+			"DMIC2", "Digital Mic2",
+			"DMIC3", "Digital Mic3",
+			"DMIC4", "Digital Mic4",
+			"DMIC5", "Digital Mic5",
+			"DMIC0", "MIC BIAS1",
+			"DMIC1", "MIC BIAS1",
+			"DMIC2", "MIC BIAS3",
+			"DMIC3", "MIC BIAS3",
+			"DMIC4", "MIC BIAS4",
+			"DMIC5", "MIC BIAS4";
 	/delete-node/ primary-mi2s-dai-link;
 	/delete-node/ tertiary-mi2s-dai-link;
 
@@ -736,6 +766,15 @@
 				vdd-rx-supply = <&wcd_vout_1p8>;
 				vdd-io-supply = <&wcd_vout_1p8>;
 				vdd-micbias-supply = <&vph_pwr>;
+
+				/* Downstream biases the headset/analog mic rail higher. */
+				qcom,micbias1-microvolt = <1800000>;
+				qcom,micbias2-microvolt = <2800000>;
+				qcom,micbias3-microvolt = <1800000>;
+				qcom,micbias4-microvolt = <1800000>;
+
+				/* Digital mic capsules run at 2.4 MHz on this board. */
+				qcom,dmic-sample-rate = <2400000>;
 			};
 		};
 	};
