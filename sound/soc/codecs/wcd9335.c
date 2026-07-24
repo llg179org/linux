@@ -4787,6 +4787,13 @@ static void wcd9335_codec_init(struct snd_soc_component *component)
 	regmap_update_bits(wcd->regmap, WCD9335_CODEC_RPM_CLK_MCLK_CFG,
 				WCD9335_CODEC_RPM_CLK_MCLK_CFG_MCLK_MASK,
 				WCD9335_CODEC_RPM_CLK_MCLK_CFG_9P6MHZ);
+	/*
+	 * Set MCLK_CFG bit 2, which the downstream driver programs as part of
+	 * its codec register defaults but mainline omits. Without it the codec
+	 * mis-handles the master clock (garbled/silent SLIMbus playback).
+	 */
+	regmap_update_bits(wcd->regmap, WCD9335_CODEC_RPM_CLK_MCLK_CFG,
+				BIT(2), BIT(2));
 
 	for (i = 0; i < ARRAY_SIZE(wcd9335_codec_reg_init); i++)
 		snd_soc_component_update_bits(component,
