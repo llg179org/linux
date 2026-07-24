@@ -331,7 +331,22 @@
 	 * the external MCLK (divclk1) enabled for the whole playback path.
 	 * (Same single route every wcd9335 board uses, e.g. apq8096-db820c.)
 	 */
-	audio-routing = "RX_BIAS", "MCLK";
+	/*
+	 * The analog mics need their bias supply routed in the same way: the
+	 * WCD9335 "MIC BIAS<n>" widgets are supplies with no in-codec route, so
+	 * without these the capsule is unpowered and capture records ~digital
+	 * silence. Mapping mirrors the downstream FP3 audio DT: the handset
+	 * (main) mic is AMIC5 on MIC BIAS3, the headset mic is AMIC2 on
+	 * MIC BIAS2. AMIC1 is not connected on this board.
+	 *
+	 * Only the supply->input direction is listed. The downstream DT also
+	 * carries the reverse "MIC BIAS<n>" -> "<name> Mic" pairs, but modern
+	 * ASoC rejects connecting a non-supply widget into a supply widget,
+	 * which fails the whole card probe.
+	 */
+	audio-routing = "RX_BIAS", "MCLK",
+			"AMIC5", "MIC BIAS3",
+			"AMIC2", "MIC BIAS2";
 	/delete-node/ primary-mi2s-dai-link;
 	/delete-node/ tertiary-mi2s-dai-link;
 
