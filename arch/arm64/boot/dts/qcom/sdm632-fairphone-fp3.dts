@@ -344,7 +344,15 @@
 	 * ASoC rejects connecting a non-supply widget into a supply widget,
 	 * which fails the whole card probe.
 	 */
+	/*
+	 * MCLK has no in-codec routes either, so every path that needs it has
+	 * to pull it up from here. Wiring it through RX_BIAS alone leaves the
+	 * capture path unclocked and the decimators emit zeroes unless a
+	 * playback stream happens to be running at the same time.
+	 */
 	audio-routing = "RX_BIAS", "MCLK",
+			"AMIC2", "MCLK",
+			"AMIC5", "MCLK",
 			"AMIC5", "MIC BIAS3",
 			"AMIC2", "MIC BIAS2";
 	/delete-node/ primary-mi2s-dai-link;
