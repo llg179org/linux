@@ -37,6 +37,47 @@
 		};
 	};
 
+	/*
+	 * Conservative battery profile for first charger bring-up.
+	 * voltage-max-design (= float voltage) and capacity come from the
+	 * Fairphone downstream qg-batterydata (max-voltage 4.39 V, 3000 mAh).
+	 * Charge current is intentionally limited to 1 A, well below the
+	 * downstream 2.0-2.7 A fast-charge value, to minimise risk while testing.
+	 */
+	fp3_battery: battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4390000>;
+		charge-full-design-microamp-hours = <3000000>;
+		constant-charge-current-max-microamp = <1000000>;
+		constant-charge-voltage-max-microvolt = <4390000>;
+
+		/*
+		 * Voltage-based fuel gauge: OCV->capacity lookup table.
+		 * Extracted from the downstream Fairphone qpnp-qg battery
+		 * profile (qg-batterydata-Kayo-3000mah-Nov4th2019-pmi632,
+		 * pc-temp-v1-lut, 25 degC column). Values converted from the
+		 * downstream 100uV units to microvolts. This is the same OCV
+		 * characterisation the downstream QG gauge uses; the mainline
+		 * power-supply core interpolates capacity from it.
+		 */
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 = <4383100 100>, <4357500 98>, <4332500 96>, <4308200 94>,
+			<4284000 92>, <4260000 90>, <4236300 88>, <4212900 86>,
+			<4189900 84>, <4167300 82>, <4144900 80>, <4124000 78>,
+			<4105600 76>, <4086900 74>, <4063800 72>, <4038100 70>,
+			<4017500 68>, <4001900 66>, <3987500 64>, <3973200 62>,
+			<3958900 60>, <3940200 58>, <3914200 56>, <3891000 54>,
+			<3875700 52>, <3863600 50>, <3854000 48>, <3846400 46>,
+			<3839400 44>, <3832500 42>, <3826200 40>, <3820300 38>,
+			<3815000 36>, <3810200 34>, <3806200 32>, <3802500 30>,
+			<3798900 28>, <3795300 26>, <3790200 24>, <3781500 22>,
+			<3770800 20>, <3759600 18>, <3746800 16>, <3731200 14>,
+			<3716600 12>, <3707000 10>, <3704400 9>, <3703100 8>,
+			<3701300 7>, <3697600 6>, <3676700 5>, <3634800 4>,
+			<3578500 3>, <3501900 2>, <3383200 1>, <3000000 0>;
+	};
+
 	vreg_cam_af_2p85: regulator-cam-af-2p85 {
 		compatible = "regulator-fixed";
 		regulator-name = "cam_af_2p85";
@@ -327,6 +368,11 @@
 			};
 		};
 	};
+};
+
+&pmi632_charger {
+	monitored-battery = <&fp3_battery>;
+	status = "okay";
 };
 
 &pmi632_vbus {
