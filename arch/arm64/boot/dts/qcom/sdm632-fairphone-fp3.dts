@@ -5,6 +5,7 @@
 /dts-v1/;
 
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/sound/qcom,wcd9335.h>
 #include "sdm632.dtsi"
 #include "pm8953.dtsi"
 #include "pmi632.dtsi"
@@ -323,8 +324,67 @@
 
 	status = "okay";
 
-	/* FP3 does not use the codec on PM8953 */
-	/delete-property/ audio-routing;
+	/*
+	 * Replace the inherited PM8953-codec routing: the WCD9335's MCLK supply
+	 * widget has no in-codec route, so the board must pull it in. RX_BIAS is
+	 * a dependency of every RX interpolator DAC, so "RX_BIAS" -> "MCLK" keeps
+	 * the external MCLK (divclk1) enabled for the whole playback path.
+	 * (Same single route every wcd9335 board uses, e.g. apq8096-db820c.)
+	 */
+	/*
+	 * The analog mics need their bias supply routed in the same way: the
+	 * WCD9335 "MIC BIAS<n>" widgets are supplies with no in-codec route, so
+	 * without these the capsule is unpowered and capture records ~digital
+	 * silence. Mapping mirrors the downstream FP3 audio DT: the handset
+	 * (main) mic is AMIC5 on MIC BIAS3, the headset mic is AMIC2 on
+	 * MIC BIAS2. AMIC1 is not connected on this board.
+	 *
+	 * Only the supply->input direction is listed. The downstream DT also
+	 * carries the reverse "MIC BIAS<n>" -> "<name> Mic" pairs, but modern
+	 * ASoC rejects connecting a non-supply widget into a supply widget,
+	 * which fails the whole card probe.
+	 */
+	/*
+	 * MCLK has no in-codec routes either, so every path that needs it has
+	 * to pull it up from here. Wiring it through RX_BIAS alone leaves the
+	 * capture path unclocked and the decimators emit zeroes unless a
+	 * playback stream happens to be running at the same time.
+	 */
+	audio-routing = "RX_BIAS", "MCLK",
+			"AMIC2", "MCLK",
+			"AMIC5", "MCLK",
+			"AMIC5", "MIC BIAS3",
+			"AMIC2", "MIC BIAS2",
+			/*
+			 * The digital mics are supplies-with-no-route as well, and
+			 * their clock is divided down from MCLK, so they need both.
+			 * Bias mapping mirrors the downstream FP3 audio DT.
+			 */
+			"DMIC0", "MCLK",
+			"DMIC1", "MCLK",
+			"DMIC2", "MCLK",
+			"DMIC3", "MCLK",
+			"DMIC4", "MCLK",
+			"DMIC5", "MCLK",
+			/*
+			 * A DMIC widget is an ADC, not an input, so DAPM will not power
+			 * it from a supply alone - it needs a source endpoint. Downstream
+			 * gets that from the reverse "MIC BIAS<n>" -> "Digital Mic<n>"
+			 * pair, which modern ASoC rejects, so wire the mic widget
+			 * straight to the DMIC instead.
+			 */
+			"DMIC0", "Digital Mic0",
+			"DMIC1", "Digital Mic1",
+			"DMIC2", "Digital Mic2",
+			"DMIC3", "Digital Mic3",
+			"DMIC4", "Digital Mic4",
+			"DMIC5", "Digital Mic5",
+			"DMIC0", "MIC BIAS1",
+			"DMIC1", "MIC BIAS1",
+			"DMIC2", "MIC BIAS3",
+			"DMIC3", "MIC BIAS3",
+			"DMIC4", "MIC BIAS4",
+			"DMIC5", "MIC BIAS4";
 	/delete-node/ primary-mi2s-dai-link;
 	/delete-node/ tertiary-mi2s-dai-link;
 
@@ -341,6 +401,39 @@
 
 		platform {
 			sound-dai = <&q6routing>;
+		};
+	};
+
+	/* WCD9335 over SLIMbus: earpiece/headset playback + mic capture */
+	slim-playback-dai-link {
+		link-name = "SLIM Playback";
+
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_RX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9335 AIF1_PB>;
+		};
+	};
+
+	slim-capture-dai-link {
+		link-name = "SLIM Capture";
+
+		cpu {
+			sound-dai = <&q6afedai SLIMBUS_0_TX>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&wcd9335 AIF1_CAP>;
 		};
 	};
 };
@@ -534,4 +627,169 @@
 	vddrfa-supply = <&pm8953_l19>;
 	vddpa-supply = <&pm8953_l9>;
 	vdddig-supply = <&pm8953_l5>;
+};
+
+/*
+ * Fairphone 3 audio: WCD9335 codec over SLIMbus.
+ *
+ * The SLIMbus NGD controller uses the standard qcom,slim-ngd-v1.5.0 binding
+ * (defined for MSM8996; the msm8953 NGD is the same hardware generation). The
+ * FP3-specific node instantiation below -- the NGD/BAM addresses and the
+ * WCD9335 codec setup (reset/interrupt pinctrl, MCLK, regulators, channels) --
+ * is adapted from Bert Karwatzki's working Fairphone 3 configuration; no other
+ * msm8953 board in-tree instantiates the SLIMbus NGD.
+ * Link: https://lkml.iu.edu/hypermail/linux/kernel/2502.1/00985.html
+ *
+ * These plug into the msm8953 q6afe / q6routing / sound-card infrastructure in
+ * msm8953.dtsi (authored by Trịnh Duy Mạnh); those nodes are only referenced
+ * here by label, their authorship preserved in that file's history.
+ */
+&tlmm {
+	wcd_intr_default: wcd-intr-default-state {
+		pins = "gpio73";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
+	};
+
+	cdc_reset_active: cdc-reset-active-state {
+		pins = "gpio67";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-pull-down;
+		output-high;
+	};
+};
+
+&pm8953_gpios {
+	/*
+	 * Keep this to the bare mux (function "func1" routes RPM DIV_CLK2 to
+	 * the pad, i.e. PMIC gpio source-select 2, matching the downstream FP3
+	 * codec MCLK). Adding drive-strength/bias/output pinconf here makes the
+	 * "default" state fail to apply on this PMIC, which aborts the
+	 * gpio-gate-clock probe so no MCLK is produced at all.
+	 */
+	tasha_mclk_default: tasha-mclk-default-state {
+		pins = "gpio1";
+		function = "func1";
+		power-source = <0>;
+	};
+};
+
+&soc {
+	/*
+	 * Codec MCLK: PM8953 gpio1-gated clock off RPM DIV_CLK2, exactly as the
+	 * downstream FP3 audio config sources it (the same RPM XO-buffer clock,
+	 * which downstream labels "clk_div_clk2").
+	 */
+	divclk1_cdc: divclk1 {
+		compatible = "gpio-gate-clock";
+		clocks = <&rpmcc RPM_SMD_DIV_CLK2>;
+		#clock-cells = <0>;
+		enable-gpios = <&pm8953_gpios 1 GPIO_ACTIVE_HIGH>;
+		/*
+		 * Must be the "default" state: the gpio-gate-clock driver does not
+		 * select pinctrl states itself, so only "default" is applied
+		 * automatically at probe. With custom "active"/"sleep" names the
+		 * gpio1 func1 mux stays UNCLAIMED (pad in its normal-GPIO reset
+		 * function) and the divider clock never reaches the WCD9335 MCLK
+		 * pin, even though the gate GPIO value is driven. (apq8096-db820c
+		 * uses "default" for the same divclk1 mclk.)
+		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&tasha_mclk_default>;
+	};
+
+	wcd_vout_1p8: wcd-vout-1p8 {
+		compatible = "regulator-fixed";
+		regulator-name = "wcd-vout-1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&tlmm 50 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	slimbam: dma-controller@c104000 {
+		compatible = "qcom,bam-v1.7.0";
+		qcom,controlled-remotely;
+		reg = <0x0c104000 0x2a000>;
+		interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_HIGH>;
+		#dma-cells = <1>;
+		qcom,ee = <1>;
+		qcom,num-ees = <3>;
+		num-channels = <23>;
+	};
+
+	slim_msm: slim-ngd@c140000 {
+		compatible = "qcom,slim-ngd-v1.5.0";
+		reg = <0x0c140000 0x2c000>;
+		interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
+		dmas = <&slimbam 3>, <&slimbam 4>;
+		dma-names = "rx", "tx";
+		/*
+		 * FP3 quirk: QDSP6SS reg whose bit3 blocks the ADSP framer
+		 * master-capability if left set by the mainline PAS boot.
+		 */
+		qcom,slim-framer-quirk-reg = <0x0c20002c>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		slim@1 {
+			reg = <1>;
+			#address-cells = <2>;
+			#size-cells = <0>;
+
+			tasha_ifd: ifd@0,0 {
+				compatible = "slim217,1a0";
+				reg = <0 0>;
+			};
+
+			wcd9335: codec@1,0 {
+				compatible = "slim217,1a0";
+				reg = <1 0>;
+				slim-ifc-dev = <&tasha_ifd>;
+				#sound-dai-cells = <1>;
+				interrupt-parent = <&tlmm>;
+				interrupts = <73 IRQ_TYPE_LEVEL_HIGH>,
+					     <74 IRQ_TYPE_LEVEL_HIGH>;
+				interrupt-names = "intr1", "intr2";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				reset-gpios = <&tlmm 67 GPIO_ACTIVE_LOW>;
+				pinctrl-0 = <&cdc_reset_active &wcd_intr_default>;
+				pinctrl-names = "default";
+				clock-names = "mclk", "slimbus";
+				clocks = <&divclk1_cdc>, <&rpmcc RPM_SMD_DIV_CLK2>;
+				vdd-buck-supply = <&wcd_vout_1p8>;
+				vdd-buck-sido-supply = <&wcd_vout_1p8>;
+				vdd-tx-supply = <&wcd_vout_1p8>;
+				vdd-rx-supply = <&wcd_vout_1p8>;
+				vdd-io-supply = <&wcd_vout_1p8>;
+				vdd-micbias-supply = <&vph_pwr>;
+
+				/* Downstream biases the headset/analog mic rail higher. */
+				qcom,micbias1-microvolt = <1800000>;
+				qcom,micbias2-microvolt = <2800000>;
+				qcom,micbias3-microvolt = <1800000>;
+				qcom,micbias4-microvolt = <1800000>;
+
+				/* Digital mic capsules run at 2.4 MHz on this board. */
+				qcom,dmic-sample-rate = <2400000>;
+
+				/*
+				 * Headset (MBHC) button thresholds in mV. These
+				 * are the common Qualcomm reference values; the
+				 * jack insert/remove path does not depend on them
+				 * and works regardless. If the physical jack turns
+				 * out to be normally-open, add the
+				 * qcom,hphl-jack-type-normally-open and
+				 * qcom,gnd-jack-type-normally-open properties.
+				 */
+				qcom,mbhc-vthreshold = <75 150 237 450 500
+							500 500 500>;
+			};
+		};
+	};
 };
