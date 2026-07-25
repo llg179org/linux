@@ -22,6 +22,9 @@
 
 #define MI2S_COUNT  (MI2S_QUINARY + 1)
 
+#define SLIM_MAX_TX_PORTS 16
+#define SLIM_MAX_RX_PORTS 13
+
 struct apq8016_sbc_data {
 	struct snd_soc_card card;
 	void __iomem *mic_iomux;
@@ -30,6 +33,7 @@ struct apq8016_sbc_data {
 	struct snd_soc_jack jack;
 	bool jack_setup;
 	bool use_ibit_clk;
+	bool slim_port_setup;
 	int mi2s_clk_count[MI2S_COUNT];
 };
 
@@ -313,12 +317,142 @@ static void msm8916_qdsp6_add_ops(struct snd_soc_card *card)
 	}
 }
 
+/*
+ * SLIMbus backend support (e.g. FP3 with the WCD9335 codec).
+ *
+ * The WCD9335 uses a fixed set of SLIMbus channel numbers. We hand those to
+ * the codec once, and on each hw_params we read the codec channel map back and
+ * program the matching q6afe SLIMbus port. SLIMbus backends do not use the
+ * LPAIF MI2S bit clock, so they bypass the MI2S startup/shutdown clock path.
+ *
+ * The channel-map handling follows the SLIMbus backend flow in
+ * sound/soc/qcom/sdm845.c.
+ */
+static int msm8953_slim_dai_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_card *card = rtd->card;
+	struct apq8016_sbc_data *pdata = snd_soc_card_get_drvdata(card);
+	struct snd_soc_dai *codec_dai;
+	unsigned int rx_ch[SLIM_MAX_RX_PORTS] = {144, 145, 146, 147, 148, 149,
+					150, 151, 152, 153, 154, 155, 156};
+	unsigned int tx_ch[SLIM_MAX_TX_PORTS] = {128, 129, 130, 131, 132, 133,
+					134, 135, 136, 137, 138, 139,
+					140, 141, 142, 143};
+	int ret, i;
+
+	/* setting up the codec multiple times for slim ports is redundant */
+	if (pdata->slim_port_setup)
+		return 0;
+
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		ret = snd_soc_dai_set_channel_map(codec_dai,
+						  ARRAY_SIZE(tx_ch), tx_ch,
+						  ARRAY_SIZE(rx_ch), rx_ch);
+		if (ret != 0 && ret != -ENOTSUPP)
+			return ret;
+
+		snd_soc_dai_set_sysclk(codec_dai, 0, DEFAULT_MCLK_RATE,
+				       SNDRV_PCM_STREAM_PLAYBACK);
+	}
+
+	pdata->slim_port_setup = true;
+	return 0;
+}
+
+static int msm8953_qdsp6_dai_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+
+	switch (cpu_dai->id) {
+	case SLIMBUS_0_RX ... SLIMBUS_6_TX:
+		return msm8953_slim_dai_init(rtd);
+	default:
+		return msm8916_qdsp6_dai_init(rtd);
+	}
+}
+
+static int msm8953_qdsp6_be_hw_params(struct snd_pcm_substream *substream,
+				      struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	struct snd_soc_dai *codec_dai;
+	u32 rx_ch[SLIM_MAX_RX_PORTS], tx_ch[SLIM_MAX_TX_PORTS];
+	u32 rx_ch_cnt = 0, tx_ch_cnt = 0;
+	int ret, i;
+
+	/* Only SLIMbus backends carry a codec channel map to propagate. */
+	if (cpu_dai->id < SLIMBUS_0_RX || cpu_dai->id > SLIMBUS_6_TX)
+		return 0;
+
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		ret = snd_soc_dai_get_channel_map(codec_dai, &tx_ch_cnt, tx_ch,
+						  &rx_ch_cnt, rx_ch);
+		if (ret == -ENOTSUPP)
+			continue;
+		if (ret != 0)
+			return ret;
+
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+			ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
+							  rx_ch_cnt, rx_ch);
+		else
+			ret = snd_soc_dai_set_channel_map(cpu_dai, tx_ch_cnt,
+							  tx_ch, 0, NULL);
+		if (ret != 0 && ret != -ENOTSUPP)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int msm8953_qdsp6_be_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+
+	/* SLIMbus backends do not drive the LPAIF MI2S bit clock. */
+	if (cpu_dai->id >= SLIMBUS_0_RX && cpu_dai->id <= SLIMBUS_6_TX)
+		return 0;
+
+	return msm8916_qdsp6_startup(substream);
+}
+
+static void msm8953_qdsp6_be_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+
+	if (cpu_dai->id >= SLIMBUS_0_RX && cpu_dai->id <= SLIMBUS_6_TX)
+		return;
+
+	msm8916_qdsp6_shutdown(substream);
+}
+
+static const struct snd_soc_ops msm8953_qdsp6_be_ops = {
+	.startup = msm8953_qdsp6_be_startup,
+	.shutdown = msm8953_qdsp6_be_shutdown,
+	.hw_params = msm8953_qdsp6_be_hw_params,
+};
+
 static void msm8953_qdsp6_add_ops(struct snd_soc_card *card)
 {
 	struct apq8016_sbc_data *pdata = snd_soc_card_get_drvdata(card);
+	struct snd_soc_dai_link *link;
+	int i;
 
 	pdata->use_ibit_clk = true;
-	msm8916_qdsp6_add_ops(card);
+
+	/* Make it obvious to userspace that QDSP6 is used */
+	card->components = "qdsp6";
+
+	for_each_card_prelinks(card, i, link) {
+		if (link->no_pcm) {
+			link->init = msm8953_qdsp6_dai_init;
+			link->ops = &msm8953_qdsp6_be_ops;
+			link->be_hw_params_fixup = msm8916_qdsp6_be_hw_params_fixup;
+		}
+	}
 }
 
 static const struct snd_kcontrol_new apq8016_sbc_snd_controls[] = {
@@ -332,8 +466,12 @@ static const struct snd_soc_dapm_widget apq8016_sbc_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("Handset Mic", NULL),
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
 	SND_SOC_DAPM_MIC("Secondary Mic", NULL),
+	SND_SOC_DAPM_MIC("Digital Mic0", NULL),
 	SND_SOC_DAPM_MIC("Digital Mic1", NULL),
 	SND_SOC_DAPM_MIC("Digital Mic2", NULL),
+	SND_SOC_DAPM_MIC("Digital Mic3", NULL),
+	SND_SOC_DAPM_MIC("Digital Mic4", NULL),
+	SND_SOC_DAPM_MIC("Digital Mic5", NULL),
 };
 
 static int apq8016_sbc_platform_probe(struct platform_device *pdev)
