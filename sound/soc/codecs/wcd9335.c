@@ -4746,6 +4746,14 @@ static void wcd9335_enable_sido_buck(struct snd_soc_component *component)
 static int wcd9335_enable_efuse_sensing(struct snd_soc_component *comp)
 {
 	_wcd9335_codec_enable_mclk(comp, true);
+	/*
+	 * Select efuse sense state 0 before enabling. The downstream driver
+	 * clears this field first; without it the sense never completes on some
+	 * parts (EFUSE_STATUS stays 0), which then breaks SLIMbus data ports.
+	 */
+	snd_soc_component_update_bits(comp,
+				WCD9335_CHIP_TIER_CTRL_EFUSE_CTL,
+				WCD9335_CHIP_TIER_CTRL_EFUSE_SSTATE_MASK, 0x20);
 	snd_soc_component_update_bits(comp,
 				WCD9335_CHIP_TIER_CTRL_EFUSE_CTL,
 				WCD9335_CHIP_TIER_CTRL_EFUSE_EN_MASK,
@@ -4779,6 +4787,13 @@ static void wcd9335_codec_init(struct snd_soc_component *component)
 	regmap_update_bits(wcd->regmap, WCD9335_CODEC_RPM_CLK_MCLK_CFG,
 				WCD9335_CODEC_RPM_CLK_MCLK_CFG_MCLK_MASK,
 				WCD9335_CODEC_RPM_CLK_MCLK_CFG_9P6MHZ);
+	/*
+	 * Set MCLK_CFG bit 2, which the downstream driver programs as part of
+	 * its codec register defaults but mainline omits. Without it the codec
+	 * mis-handles the master clock (garbled/silent SLIMbus playback).
+	 */
+	regmap_update_bits(wcd->regmap, WCD9335_CODEC_RPM_CLK_MCLK_CFG,
+				BIT(2), BIT(2));
 
 	for (i = 0; i < ARRAY_SIZE(wcd9335_codec_reg_init); i++)
 		snd_soc_component_update_bits(component,
