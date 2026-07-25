@@ -3,6 +3,7 @@
 // Copyright (c) 2017-2018, Linaro Limited
 
 #include <linux/module.h>
+#include <linux/property.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/cleanup.h>
@@ -341,6 +342,8 @@ struct wcd9335_codec {
 	/*TX*/
 	int micb_ref[WCD9335_MAX_MICBIAS];
 	int pullup_ref[WCD9335_MAX_MICBIAS];
+	u8 micb_vout[WCD9335_MAX_MICBIAS];
+	u32 dmic_sample_rate;
 
 	int dmic_0_1_clk_cnt;
 	int dmic_2_3_clk_cnt;
@@ -2547,9 +2550,19 @@ static int wcd9335_micbias_control(struct snd_soc_component *component,
 		break;
 	case MICB_ENABLE:
 		wcd->micb_ref[micb_index]++;
-		if (wcd->micb_ref[micb_index] == 1)
+		if (wcd->micb_ref[micb_index] == 1) {
+			/*
+			 * Program the output voltage before switching the bias
+			 * on. Left at the power-on default a board that needs
+			 * more than 1.8 V gets an under-biased microphone and
+			 * a correspondingly quiet capture.
+			 */
+			snd_soc_component_update_bits(component, micb_reg,
+						      WCD9335_ANA_MICB_VOUT_MASK,
+						      wcd->micb_vout[micb_index]);
 			snd_soc_component_update_bits(component, micb_reg,
 							0xC0, 0x40);
+		}
 		break;
 	case MICB_DISABLE:
 		wcd->micb_ref[micb_index]--;
@@ -2856,16 +2869,38 @@ static int wcd9335_codec_enable_dec(struct snd_soc_dapm_widget *w,
 }
 
 static u8 wcd9335_get_dmic_clk_val(struct snd_soc_component *component,
-				 u32 mclk_rate)
+				 u32 mclk_rate, u32 dmic_clk_rate)
 {
 	u8 dmic_ctl_val;
 
+	/* Fall back to the rate the MCLK alone implies. */
 	if (mclk_rate == WCD9335_MCLK_CLK_9P6MHZ)
 		dmic_ctl_val = WCD9335_DMIC_CLK_DIV_2;
 	else
 		dmic_ctl_val = WCD9335_DMIC_CLK_DIV_3;
 
-	return dmic_ctl_val;
+	if (!dmic_clk_rate)
+		return dmic_ctl_val;
+
+	switch (mclk_rate / dmic_clk_rate) {
+	case 2:
+		return WCD9335_DMIC_CLK_DIV_2;
+	case 3:
+		return WCD9335_DMIC_CLK_DIV_3;
+	case 4:
+		return WCD9335_DMIC_CLK_DIV_4;
+	case 6:
+		return WCD9335_DMIC_CLK_DIV_6;
+	case 8:
+		return WCD9335_DMIC_CLK_DIV_8;
+	case 16:
+		return WCD9335_DMIC_CLK_DIV_16;
+	default:
+		dev_err(component->dev,
+			"No divider for a %u Hz DMIC clock off a %u Hz MCLK\n",
+			dmic_clk_rate, mclk_rate);
+		return dmic_ctl_val;
+	}
 }
 
 static int wcd9335_codec_enable_dmic(struct snd_soc_dapm_widget *w,
@@ -2918,7 +2953,8 @@ static int wcd9335_codec_enable_dmic(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		dmic_rate_val = wcd9335_get_dmic_clk_val(comp, wcd->mclk_rate);
+		dmic_rate_val = wcd9335_get_dmic_clk_val(comp, wcd->mclk_rate,
+							 wcd->dmic_sample_rate);
 		(*dmic_clk_cnt)++;
 		if (*dmic_clk_cnt == 1) {
 			snd_soc_component_update_bits(comp, dmic_clk_reg,
@@ -2930,7 +2966,8 @@ static int wcd9335_codec_enable_dmic(struct snd_soc_dapm_widget *w,
 
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		dmic_rate_val = wcd9335_get_dmic_clk_val(comp, wcd->mclk_rate);
+		dmic_rate_val = wcd9335_get_dmic_clk_val(comp, wcd->mclk_rate,
+							 wcd->dmic_sample_rate);
 		(*dmic_clk_cnt)--;
 		if (*dmic_clk_cnt  == 0) {
 			snd_soc_component_update_bits(comp, dmic_clk_reg,
@@ -5005,6 +5042,30 @@ static const struct regmap_irq_chip wcd9335_regmap_irq1_chip = {
 	.set_type_config = regmap_irq_set_type_config_simple,
 };
 
+static void wcd9335_parse_micbias_voltages(struct wcd9335_codec *wcd)
+{
+	struct device *dev = wcd->dev;
+	char prop[32];
+	u32 uv;
+	int i;
+
+	for (i = 0; i < WCD9335_MAX_MICBIAS; i++) {
+		u32 mv = WCD9335_MICB_DEF_MV;
+
+		snprintf(prop, sizeof(prop), "qcom,micbias%d-microvolt", i + 1);
+		if (!device_property_read_u32(dev, prop, &uv)) {
+			mv = uv / 1000;
+			if (mv < WCD9335_MICB_MIN_MV || mv > WCD9335_MICB_MAX_MV) {
+				dev_warn(dev, "%s out of range (%u mV), using %u mV\n",
+					 prop, mv, WCD9335_MICB_DEF_MV);
+				mv = WCD9335_MICB_DEF_MV;
+			}
+		}
+
+		wcd->micb_vout[i] = (mv - WCD9335_MICB_MIN_MV) / WCD9335_MICB_STEP_MV;
+	}
+}
+
 static int wcd9335_parse_dt(struct wcd9335_codec *wcd)
 {
 	struct device *dev = wcd->dev;
@@ -5026,6 +5087,17 @@ static int wcd9335_parse_dt(struct wcd9335_codec *wcd)
 					     wcd9335_supplies);
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to get and enable supplies\n");
+
+	wcd9335_parse_micbias_voltages(wcd);
+
+	/*
+	 * Digital mics are clocked off MCLK through a divider. Without a rate
+	 * from the board the divider is guessed from MCLK alone, which on a
+	 * 9.6 MHz part means 4.8 MHz - twice what a typical capsule accepts,
+	 * and the mics then return silence.
+	 */
+	device_property_read_u32(dev, "qcom,dmic-sample-rate",
+				 &wcd->dmic_sample_rate);
 
 	return 0;
 }
