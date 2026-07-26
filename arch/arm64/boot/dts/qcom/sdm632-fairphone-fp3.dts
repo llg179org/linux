@@ -267,6 +267,16 @@
 &lpass {
 	firmware-name = "qcom/msm8953/fairphone/fp3/adsp.mbn";
 
+	/*
+	 * The ADSP firmware derives the Q6 core clock divider from the CX
+	 * performance state it is handed. Without a vote the domain stays at
+	 * its minimum and the firmware programs QDSP6SS_CORE_CFG_RCGR for
+	 * divider 6, which is too slow for the SLIMbus master capability
+	 * exchange to complete in time. Downstream votes TURBO for the same
+	 * reason.
+	 */
+	required-opps = <&rpmpd_opp_turbo>;
+
 	status = "okay";
 };
 
