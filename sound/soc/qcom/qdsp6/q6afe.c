@@ -976,8 +976,17 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 	switch (hdr->opcode) {
 	case APR_BASIC_RSP_RESULT: {
 		if (res->status) {
-			dev_err(afe->dev, "cmd = 0x%x returned error = 0x%x\n",
-				res->opcode, res->status);
+			/*
+			 * Starting a port that is already running is not an
+			 * error, see afe_apr_send_pkt().
+			 */
+			if (res->opcode == AFE_PORT_CMD_DEVICE_START &&
+			    res->status == ADSP_EALREADY)
+				dev_dbg(afe->dev, "cmd = 0x%x: port already started\n",
+					res->opcode);
+			else
+				dev_err(afe->dev, "cmd = 0x%x returned error = 0x%x\n",
+					res->opcode, res->status);
 		}
 		switch (res->opcode) {
 		case AFE_PORT_CMD_SET_PARAM_V2:
