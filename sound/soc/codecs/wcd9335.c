@@ -10,6 +10,7 @@
 #include <linux/device.h>
 #include <linux/input.h>
 #include <linux/wait.h>
+#include <linux/workqueue.h>
 #include <linux/bitops.h>
 #include <linux/regulator/consumer.h>
 #include <linux/clk.h>
@@ -331,6 +332,10 @@ struct wcd9335_codec {
 	int mbhc_btn0_released;
 	bool detect_accessory_type;
 	int accessory_type;
+	/* button reports are deferred, see wcd9335_mbhc_btn_work() */
+	struct delayed_work mbhc_btn_work;
+	int mbhc_btn_pending;
+	bool mbhc_btn_reported;
 	/* Voltage threshold for each of the headset buttons, in mV */
 	u32 vref_btn[WCD9335_MBHC_MAX_BUTTONS];
 
@@ -3971,6 +3976,8 @@ static int wcd9335_codec_enable_ear_pa(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+static void wcd9335_mbhc_btn_release(struct wcd9335_codec *wcd);
+
 static irqreturn_t wcd9335_mbhc_sw_irq(int irq, void *data)
 {
 	struct wcd9335_codec *wcd = data;
@@ -4031,6 +4038,7 @@ static irqreturn_t wcd9335_mbhc_sw_irq(int irq, void *data)
 		wcd->detect_accessory_type = false;
 
 	} else { /* removal */
+		wcd9335_mbhc_btn_release(wcd);
 		snd_soc_jack_report(wcd->jack, 0, wcd9335_hs_jack_mask);
 		wcd->detect_accessory_type = true;
 		wcd->mbhc_btn0_released = false;
@@ -4039,11 +4047,47 @@ static irqreturn_t wcd9335_mbhc_sw_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+/*
+ * Unplugging a headset trips the button comparator before the mechanical
+ * detection notices that the jack is gone: measured on a Fairphone 3, the codec
+ * reports a button press 84 ms before the removal and releases it 62 ms later.
+ * Userspace sees a complete key tap - BTN_0 is a media key - and acts on it, so
+ * a jack pulled out of the socket starts a music player. A real press lasts far
+ * longer than the transient, so report one only once it is still there a moment
+ * later, and drop it if the release or the removal arrives first.
+ */
+#define WCD9335_MBHC_BTN_DEBOUNCE_MS	120
+
+static void wcd9335_mbhc_btn_work(struct work_struct *work)
+{
+	struct wcd9335_codec *wcd = container_of(work, struct wcd9335_codec,
+						 mbhc_btn_work.work);
+
+	if (!wcd->jack_inserted || wcd->detect_accessory_type ||
+	    wcd->accessory_type == SND_JACK_HEADPHONE)
+		return;
+
+	wcd->mbhc_btn_reported = true;
+	snd_soc_jack_report(wcd->jack, wcd->mbhc_btn_pending,
+			    wcd9335_mbhc_btn_mask);
+}
+
+static void wcd9335_mbhc_btn_release(struct wcd9335_codec *wcd)
+{
+	cancel_delayed_work(&wcd->mbhc_btn_work);
+	wcd->mbhc_btn_pending = 0;
+	if (wcd->mbhc_btn_reported) {
+		wcd->mbhc_btn_reported = false;
+		snd_soc_jack_report(wcd->jack, 0, wcd9335_mbhc_btn_mask);
+	}
+}
+
 static irqreturn_t wcd9335_mbhc_btn_press_irq(int irq, void *data)
 {
 	struct wcd9335_codec *wcd = data;
 	struct snd_soc_component *comp = wcd->component;
 	u32 btn_result, result;
+	int btn;
 
 	/* do not handle any button events for headset without buttons */
 	if (wcd->accessory_type == SND_JACK_HEADPHONE)
@@ -4055,32 +4099,32 @@ static irqreturn_t wcd9335_mbhc_btn_press_irq(int irq, void *data)
 	switch (btn_result) {
 	case 0xf:
 	case 0x4:
-		snd_soc_jack_report(wcd->jack, SND_JACK_BTN_4,
-				    wcd9335_mbhc_btn_mask);
+		btn = SND_JACK_BTN_4;
 		break;
 	case 0x3:
-		snd_soc_jack_report(wcd->jack, SND_JACK_BTN_3,
-				    wcd9335_mbhc_btn_mask);
+		btn = SND_JACK_BTN_3;
 		break;
 	case 0x2:
-		snd_soc_jack_report(wcd->jack, SND_JACK_BTN_2,
-				    wcd9335_mbhc_btn_mask);
+		btn = SND_JACK_BTN_2;
 		break;
 	case 0x1:
-		snd_soc_jack_report(wcd->jack, SND_JACK_BTN_1,
-				    wcd9335_mbhc_btn_mask);
+		btn = SND_JACK_BTN_1;
 		break;
 	case 0x0:
 		/* handle BTN_0 specially for type detection */
-		if (!wcd->detect_accessory_type)
-			snd_soc_jack_report(wcd->jack, SND_JACK_BTN_0,
-					    wcd9335_mbhc_btn_mask);
+		if (wcd->detect_accessory_type)
+			return IRQ_HANDLED;
+		btn = SND_JACK_BTN_0;
 		break;
 	default:
 		dev_err(comp->dev,
 			"Unexpected button press result (%x)", btn_result);
-		break;
+		return IRQ_HANDLED;
 	}
+
+	wcd->mbhc_btn_pending = btn;
+	mod_delayed_work(system_wq, &wcd->mbhc_btn_work,
+			 msecs_to_jiffies(WCD9335_MBHC_BTN_DEBOUNCE_MS));
 
 	return IRQ_HANDLED;
 }
@@ -4099,8 +4143,7 @@ static irqreturn_t wcd9335_mbhc_bt_rel_irq(int irq, void *data)
 
 	} else {
 		if (wcd->accessory_type != SND_JACK_HEADPHONE)
-			snd_soc_jack_report(wcd->jack, 0,
-					    wcd9335_mbhc_btn_mask);
+			wcd9335_mbhc_btn_release(wcd);
 	}
 
 	return IRQ_HANDLED;
@@ -4122,6 +4165,8 @@ static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
 {
 	struct snd_soc_component *comp = wcd->component;
 	u32 plug_type = 0;
+
+	INIT_DELAYED_WORK(&wcd->mbhc_btn_work, wcd9335_mbhc_btn_work);
 
 	snd_soc_component_update_bits(comp, WCD9335_MBHC_PLUG_DETECT_CTL,
 			WCD9335_MBHC_HSDET_PULLUP_CTL_MASK,
@@ -5171,6 +5216,7 @@ static void wcd9335_codec_remove(struct snd_soc_component *comp)
 
 	wcd_clsh_ctrl_free(wcd->clsh_ctrl);
 	wcd9335_teardown_irqs(wcd);
+	cancel_delayed_work_sync(&wcd->mbhc_btn_work);
 }
 
 static int wcd9335_codec_set_sysclk(struct snd_soc_component *comp,
