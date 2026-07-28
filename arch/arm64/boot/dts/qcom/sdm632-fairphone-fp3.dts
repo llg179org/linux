@@ -535,3 +535,44 @@
 	vddpa-supply = <&pm8953_l9>;
 	vdddig-supply = <&pm8953_l5>;
 };
+
+/*
+ * Debug safety net (not upstream material).
+ *
+ * watchdog: the SoC watchdog the downstream tree drives at the same address.
+ * The block itself is Josh Cartwright's KPSS WDT (drivers/watchdog/qcom-wdt.c);
+ * mainline simply never described it on msm8953, so a stalled boot sits there
+ * forever and needs a physical power cycle.  The register address and the
+ * 30 s bark come from Fairphone's own downstream device tree.  With
+ * WATCHDOG_OPEN_TIMEOUT set, the core stops petting it when userspace has not
+ * taken over in time, and the SoC resets itself.
+ */
+/*
+ * No ramoops/pstore node here on purpose.  It was tried at 0x8ee00000 and again
+ * at 0xd0000000, and NOTHING survives a reset on this device: neither a pmsg
+ * marker across a clean reboot nor a dmesg record after a real panic
+ * (echo c > /proc/sysrq-trigger).  pstore registers and the console attaches --
+ * "printk: legacy console [ramoops-1] enabled" -- so the writes happen; the RAM
+ * is simply gone by the time the next kernel reads it, at either address, which
+ * points at the boot chain rather than at the placement.  Keeping the node would
+ * cost 2 MB and buy nothing.  Post-mortem for an early hang needs the UART on
+ * this hardware, not pstore.
+ */
+
+&soc {
+	watchdog@b017000 {
+		compatible = "qcom,kpss-wdt";
+		reg = <0x0b017000 0x1000>;
+		clocks = <&sleep_clk>;
+		interrupts = <GIC_SPI 3 IRQ_TYPE_EDGE_RISING>;
+		timeout-sec = <30>;
+		/*
+		 * The FP3 bootloader leaves the watchdog disabled, so without
+		 * this the kernel has no watchdog until systemd opens the
+		 * device -- an early boot hang then needs a physical button
+		 * press. Starting it at probe makes CONFIG_WATCHDOG_OPEN_TIMEOUT
+		 * cover the whole boot.
+		 */
+		qcom,start-at-probe;
+	};
+};
