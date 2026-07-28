@@ -139,6 +139,13 @@ static int smgr_prox_probe(struct platform_device *pdev)
 	priv->sensor = *(struct smgr_sensor **)pdev->dev.platform_data;
 	priv->sensor->iio_dev = iio_dev;
 
+	/*
+	 * devm_iio_device_alloc does not set the platform drvdata, and the
+	 * remove callback below reads it -- copying smgr_accel.c verbatim gave
+	 * a NULL dereference the first time the device was unbound by hand.
+	 */
+	platform_set_drvdata(pdev, iio_dev);
+
 	iio_dev->name = "qcom-smgr-prox-light";
 	iio_dev->info = &smgr_prox_iio_info;
 	iio_dev->channels = smgr_prox_iio_channels;
