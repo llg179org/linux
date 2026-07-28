@@ -25,4 +25,4 @@ obj-$(CONFIG_VCNL3020)		+= vcnl3020.o
 obj-$(CONFIG_VL53L0X_I2C)	+= vl53l0x-i2c.o
 obj-$(CONFIG_VL53L1X_I2C)	+= vl53l1x-i2c.o
 obj-$(CONFIG_AW96103)		+= aw96103.o
-
+obj-$(CONFIG_IIO_QCOM_SMGR_PROX)	+= smgr_prox.o
