@@ -38,18 +38,19 @@
 	};
 
 	/*
-	 * Conservative battery profile for first charger bring-up.
-	 * voltage-max-design (= float voltage) and capacity come from the
-	 * Fairphone downstream qg-batterydata (max-voltage 4.39 V, 3000 mAh).
-	 * Charge current is intentionally limited to 1 A, well below the
-	 * downstream 2.0-2.7 A fast-charge value, to minimise risk while testing.
+	 * Battery profile from the Fairphone downstream qg-batterydata
+	 * (max-voltage 4.39 V, 3000 mAh). The pack is rated for 2.7 A, but this
+	 * asks for 2 A: without high-voltage negotiation the input side tops
+	 * out near 1.5 A at 5 V anyway, and at 2 A the charger's JEITA
+	 * compensation can still reach this pack's characterised 600 mA
+	 * cool-zone current, which it cannot at 2.7 A.
 	 */
 	fp3_battery: battery {
 		compatible = "simple-battery";
 		voltage-min-design-microvolt = <3400000>;
 		voltage-max-design-microvolt = <4390000>;
 		charge-full-design-microamp-hours = <3000000>;
-		constant-charge-current-max-microamp = <1000000>;
+		constant-charge-current-max-microamp = <2000000>;
 		constant-charge-voltage-max-microvolt = <4390000>;
 
 		/*
@@ -372,6 +373,22 @@
 
 &pmi632_charger {
 	monitored-battery = <&fp3_battery>;
+
+	/*
+	 * JEITA comparator thresholds, as raw BAT_THERM ADC codes, and the
+	 * fast-charge current to hold in each soft zone. All four codes and
+	 * both currents are Fairphone's characterisation of this pack, read out
+	 * of qg-batterydata-Kayo-3000mah-Nov4th2019-pmi632: hard limits at 0
+	 * and 55 degC, soft limits at 20 and 45 degC, and the jeita-fcc-ranges
+	 * entries for the zones outside those soft limits.
+	 */
+	qcom,jeita-hard-thresholds = <0x5675 0x1987>;
+	qcom,jeita-soft-thresholds = <0x3ebc 0x2204>;
+	qcom,jeita-soft-fcc-microamp = <600000 1000000>;
+
+	/* Downstream's mitigation table, minus its repeated last entry. */
+	qcom,thermal-mitigation = <2000000 1500000 1000000 500000>;
+
 	status = "okay";
 };
 
@@ -640,6 +657,55 @@
 		pm8953_l23: l23 {
 			regulator-min-microvolt = <975000>;
 			regulator-max-microvolt = <1225000>;
+		};
+	};
+};
+
+/*
+ * Throttle charging on the charger's own die temperature. Downstream calls
+ * this qcom,hw-die-temp-mitigation and drives it from a userspace thermal
+ * daemon; here the PMIC's temperature zone drives it directly.
+ *
+ * The trips are ours. The zone already ends at the PMI632's own alarms, which
+ * start at 95 degC, so these sit below that with room to act: measured on this
+ * board the die idles at 37 degC, and the three steps taper the charge current
+ * before the hardware has to.
+ */
+&{/thermal-zones/pmi632-thermal} {
+	trips {
+		pmi632_charger_warm: charger-warm {
+			temperature = <70000>;
+			hysteresis = <2000>;
+			type = "passive";
+		};
+
+		pmi632_charger_hot: charger-hot {
+			temperature = <80000>;
+			hysteresis = <2000>;
+			type = "passive";
+		};
+
+		pmi632_charger_very_hot: charger-very-hot {
+			temperature = <90000>;
+			hysteresis = <2000>;
+			type = "passive";
+		};
+	};
+
+	cooling-maps {
+		charger-warm {
+			trip = <&pmi632_charger_warm>;
+			cooling-device = <&pmi632_charger 1 1>;
+		};
+
+		charger-hot {
+			trip = <&pmi632_charger_hot>;
+			cooling-device = <&pmi632_charger 2 2>;
+		};
+
+		charger-very-hot {
+			trip = <&pmi632_charger_very_hot>;
+			cooling-device = <&pmi632_charger 3 3>;
 		};
 	};
 };
