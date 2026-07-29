@@ -58,6 +58,8 @@ struct smgr_sensor
 	 */
 	struct mutex lock;
 	struct completion sample_avail;
+	bool report_running;
+	bool have_sample;
 	u32 last_values[SMGR_SAMPLE_VALUES];
 };
 
