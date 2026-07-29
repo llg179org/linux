@@ -44,13 +44,16 @@
 	 * a battery-ID resistor: "Kayo" at 50 kOhm, rated 2.7 A, and "Fuji" at
 	 * 10 kOhm, rated 2.0 A. A simple-battery node cannot choose, so this
 	 * describes Fuji - the pack in the phone this was developed on, whose
-	 * downstream stack reports batt-id 9843 and selects
+	 * ID resistor measures 10.0 kOhm here and whose downstream stack
+	 * reports batt-id 9843 and selects
 	 * qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632.
 	 *
 	 * That means the current below is the pack's full rating, not a
-	 * reduction of it. A Kayo phone charges 700 mA slower than it could;
-	 * fixing that needs the battery-ID channel read, which mainline does
-	 * not do yet.
+	 * reduction of it. On a phone fitted with the other pack the charger
+	 * finds the mismatch through qcom,batt-id-ohm below and falls back to
+	 * its conservative default rather than charging a 50 kOhm cell to a
+	 * 10 kOhm cell's limits; describing both packs properly needs a
+	 * binding for more than one monitored-battery, which does not exist.
 	 */
 	fp3_battery: battery {
 		compatible = "simple-battery";
@@ -59,6 +62,26 @@
 		charge-full-design-microamp-hours = <3000000>;
 		constant-charge-current-max-microamp = <2000000>;
 		constant-charge-voltage-max-microvolt = <4390000>;
+
+		/*
+		 * The ID resistor this pack presents, and how the charger is
+		 * allowed to charge it. Both are Fairphone's characterisation
+		 * of this cell, from qg-batterydata-Fuji-3000mah-Jan22th2019-
+		 * pmi632: 10 kOhm ID, hard limits at 0 and 55 degC, soft limits
+		 * at 15 and 45, and the jeita-fcc-ranges entries for the zones
+		 * outside the soft ones. The thresholds are the raw BAT_THERM
+		 * ADC codes the comparators take; verified against a phone
+		 * running the vendor stack, which programs the same four.
+		 *
+		 * The ID matters because the FP3 also ships a second 3000 mAh
+		 * pack ("Kayo", 50 kOhm) rated 2.7 A with its cool band at
+		 * 20 degC. Only one battery can be described here, so the
+		 * charger checks the resistor before applying any of it.
+		 */
+		qcom,batt-id-ohm = <10000>;
+		qcom,jeita-hard-thresholds = <0x5675 0x1987>;
+		qcom,jeita-soft-thresholds = <0x44ff 0x2204>;
+		qcom,jeita-soft-fcc-microamp = <600000 1000000>;
 
 		/*
 		 * Voltage-based fuel gauge: OCV->capacity lookup table.
@@ -382,18 +405,12 @@
 	monitored-battery = <&fp3_battery>;
 
 	/*
-	 * JEITA comparator thresholds, as raw BAT_THERM ADC codes, and the
-	 * fast-charge current to hold in each soft zone. All four codes and
-	 * both currents are Fairphone's characterisation of this pack, read out
-	 * of qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632: hard limits at 0
-	 * and 55 degC, soft limits at 15 and 45 degC, and the jeita-fcc-ranges
-	 * entries for the zones outside those soft limits. Verified against a
-	 * phone running the downstream stack, which programs exactly these four
-	 * codes into these registers.
+	 * Which PMIC pull-up the bat_id channel switches in, so the charger can
+	 * turn the divider reading back into the pack's ID resistance. It
+	 * follows from the channel chosen in pmi632.dtsi, but nothing in the
+	 * ADC consumer interface exposes that, so the board states it.
 	 */
-	qcom,jeita-hard-thresholds = <0x5675 0x1987>;
-	qcom,jeita-soft-thresholds = <0x44ff 0x2204>;
-	qcom,jeita-soft-fcc-microamp = <600000 1000000>;
+	qcom,batt-id-pullup-ohm = <100000>;
 
 	/* Downstream's mitigation table, minus its repeated last entry. */
 	qcom,thermal-mitigation = <2000000 1500000 1000000 500000>;
