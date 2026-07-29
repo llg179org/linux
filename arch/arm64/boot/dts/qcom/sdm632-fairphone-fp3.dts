@@ -727,11 +727,6 @@
 		interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
 		dmas = <&slimbam 3>, <&slimbam 4>;
 		dma-names = "rx", "tx";
-		/*
-		 * FP3 quirk: QDSP6SS reg whose bit3 blocks the ADSP framer
-		 * master-capability if left set by the mainline PAS boot.
-		 */
-		qcom,slim-framer-quirk-reg = <0x0c20002c>;
 		#address-cells = <1>;
 		#size-cells = <0>;
 		status = "okay";

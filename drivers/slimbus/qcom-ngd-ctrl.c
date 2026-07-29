@@ -152,7 +152,6 @@ struct qcom_slim_ngd_ctrl {
 	struct qcom_slim_ngd *ngd;
 	struct device *dev;
 	void __iomem *base;
-	void __iomem *framer_quirk_reg;
 	struct dma_chan *dma_rx_channel;
 	struct dma_chan	*dma_tx_channel;
 	struct qcom_slim_ngd_dma_desc rx_desc[QCOM_SLIM_NGD_DESC_NUM];
@@ -1214,26 +1213,6 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 	 */
 	reinit_completion(&ctrl->reconf);
 
-	/*
-	 * FP3/msm8953 quirk: the mainline PAS boot path leaves QDSP6SS
-	 * register 0x0c20002c bit3 set, which stops the ADSP framer from
-	 * answering the master-capability exchange (downstream PIL clears it).
-	 * The PAS driver clears it once at boot, but the ADSP re-sets it
-	 * during its own init, so clear it again here right before we trigger
-	 * capability. See qcom_q6v5_pas.c slim_framer_quirk_reg.
-	 */
-	if (ctrl->framer_quirk_reg) {
-		u32 v = readl_relaxed(ctrl->framer_quirk_reg);
-
-		if (v & BIT(3)) {
-			u32 nv = v & ~BIT(3);
-
-			writel_relaxed(nv, ctrl->framer_quirk_reg);
-			dev_info(ctrl->dev, "slim-framer quirk: 0x%x->0x%x\n",
-				 v, nv);
-		}
-	}
-
 	writel_relaxed(DEF_NGD_INT_MASK, ngd->base + NGD_INT_EN);
 	rx_msgq = readl_relaxed(ngd->base + NGD_RX_MSGQ_CFG);
 
@@ -1614,7 +1593,6 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct qcom_slim_ngd_ctrl *ctrl;
 	int irq;
-	u32 quirk_reg;
 	int ret;
 	struct pdr_service *pds;
 
@@ -1627,17 +1605,6 @@ static int qcom_slim_ngd_ctrl_probe(struct platform_device *pdev)
 	ctrl->base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(ctrl->base))
 		return PTR_ERR(ctrl->base);
-
-	/*
-	 * FP3/msm8953 quirk: optional QDSP6SS register whose bit3 must be
-	 * cleared right before the master-capability exchange (see power_up).
-	 */
-	if (!of_property_read_u32(dev->of_node, "qcom,slim-framer-quirk-reg",
-				  &quirk_reg) && quirk_reg) {
-		ctrl->framer_quirk_reg = devm_ioremap(dev, quirk_reg, 4);
-		if (!ctrl->framer_quirk_reg)
-			dev_warn(dev, "failed to map slim-framer-quirk-reg\n");
-	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
