@@ -1056,7 +1056,6 @@ static const struct qcom_pas_data msm8953_adsp_resource = {
 	.firmware_name = "qcom/msm8953/fairphone/fp3/adsp.mbn",
 	.pas_id = 1,
 	.auto_boot = true,
-	.slim_framer_quirk_reg = 0x0c20002c,
 	.proxy_pd_names = (char*[]){
 		"cx",
 		NULL
