@@ -47,12 +47,6 @@ struct qcom_pas_data {
 	unsigned int minidump_id;
 	bool auto_boot;
 	bool decrypt_shutdown;
-	/*
-	 * FP3/msm8953: the PAS boot path leaves QDSP6SS 0x0c20002c bit3 set,
-	 * unlike downstream PIL (which clears it). With bit3 set the ADSP never
-	 * answers the SLIMbus master-capability exchange (WCD9335 gets no laddr).
-	 */
-	u32 slim_framer_quirk_reg;
 
 	char **proxy_pd_names;
 
@@ -93,7 +87,6 @@ struct qcom_pas {
 	int crash_reason_smem;
 	unsigned int smem_host_id;
 	bool decrypt_shutdown;
-	u32 slim_framer_quirk_reg;
 	const char *info_name;
 
 	const struct firmware *firmware;
@@ -353,22 +346,6 @@ static int qcom_pas_start(struct rproc *rproc)
 	qcom_scm_pas_metadata_release(pas->pas_ctx);
 	if (pas->dtb_pas_id)
 		qcom_scm_pas_metadata_release(pas->dtb_pas_ctx);
-
-	/* FP3/msm8953 SLIMbus framer quirk: clear QDSP6SS bit3 (see struct) */
-	if (pas->slim_framer_quirk_reg) {
-		void __iomem *r = ioremap(pas->slim_framer_quirk_reg, 4);
-
-		if (r) {
-			u32 v = readl(r);
-			u32 nv = v & ~BIT(3);
-
-			writel(nv, r);
-			iounmap(r);
-			dev_info(pas->dev,
-				 "slim-framer quirk: QDSP6SS 0x%x 0x%x->0x%x\n",
-				 pas->slim_framer_quirk_reg, v, nv);
-		}
-	}
 
 	/* firmware is used to pass reference from qcom_pas_start(), drop it now */
 	pas->firmware = NULL;
@@ -805,7 +782,6 @@ static int qcom_pas_probe(struct platform_device *pdev)
 	pas->rproc = rproc;
 	pas->minidump_id = desc->minidump_id;
 	pas->pas_id = desc->pas_id;
-	pas->slim_framer_quirk_reg = desc->slim_framer_quirk_reg;
 	pas->lite_pas_id = desc->lite_pas_id;
 	pas->lite_dtb_pas_id = desc->lite_dtb_pas_id;
 	pas->info_name = desc->sysmon_name;
@@ -1042,21 +1018,6 @@ static const struct qcom_pas_data msm8996_adsp_resource = {
 	.firmware_name = "adsp.mdt",
 	.pas_id = 1,
 	.auto_boot = true,
-	.proxy_pd_names = (char*[]){
-		"cx",
-		NULL
-	},
-	.ssr_name = "lpass",
-	.sysmon_name = "adsp",
-	.ssctl_id = 0x14,
-};
-
-static const struct qcom_pas_data msm8953_adsp_resource = {
-	.crash_reason_smem = 423,
-	.firmware_name = "qcom/msm8953/fairphone/fp3/adsp.mbn",
-	.pas_id = 1,
-	.auto_boot = true,
-	.slim_framer_quirk_reg = 0x0c20002c,
 	.proxy_pd_names = (char*[]){
 		"cx",
 		NULL
@@ -1576,7 +1537,7 @@ static const struct of_device_id qcom_pas_of_match[] = {
 	{ .compatible = "qcom,milos-mpss-pas", .data = &sm8450_mpss_resource },
 	{ .compatible = "qcom,milos-wpss-pas", .data = &sc7280_wpss_resource },
 	{ .compatible = "qcom,msm8226-adsp-pil", .data = &msm8996_adsp_resource },
-	{ .compatible = "qcom,msm8953-adsp-pil", .data = &msm8953_adsp_resource },
+	{ .compatible = "qcom,msm8953-adsp-pil", .data = &msm8996_adsp_resource },
 	{ .compatible = "qcom,msm8974-adsp-pil", .data = &msm8996_adsp_resource },
 	{ .compatible = "qcom,msm8996-adsp-pil", .data = &msm8996_adsp_resource },
 	{ .compatible = "qcom,msm8996-slpi-pil", .data = &msm8996_slpi_resource_init },
