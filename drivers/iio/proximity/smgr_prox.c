@@ -14,6 +14,12 @@
  * A buffering report carries three u32 values per sample regardless of sensor.
  * For this one the first is proximity and the second is ambient light, so both
  * are exposed as channels over the same scan layout the core pushes.
+ *
+ * Only proximity is readable as a raw value. SINGLE_SENSOR_INFO reports two
+ * data types for this sensor where the accelerometer has one, and the core
+ * only ever asks for the primary, so which of the two the light reading really
+ * comes from is not established yet; presenting it as a raw channel would have
+ * userspace dim the screen by it.
  */
 
 #include <linux/mod_devicetable.h>
@@ -28,8 +34,17 @@ static int smgr_prox_read_raw(struct iio_dev *iio_dev,
 			      int *val2, long mask)
 {
 	struct smgr_iio_priv *priv = iio_priv(iio_dev);
+	u32 values[SMGR_SAMPLE_VALUES];
+	int ret;
 
 	switch (mask) {
+	case IIO_CHAN_INFO_RAW:
+		ret = smgr_sensor_read_sample(priv->sensor, values);
+		if (ret)
+			return ret;
+
+		*val = values[chan->scan_index];
+		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*val = priv->sensor->data_types[0].cur_sample_rate;
 		return IIO_VAL_INT;
@@ -99,6 +114,12 @@ static const struct iio_chan_spec smgr_prox_iio_channels[] = {
 			.storagebits = 32,
 			.endianness = IIO_LE,
 		},
+		/*
+		 * iio-sensor-proxy, and so phosh's in-call blanking, has no
+		 * buffered proximity driver at all -- it polls in_proximity_raw
+		 * -- so this channel has to be readable without a buffer.
+		 */
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SAMP_FREQ),
 	},
 	{
