@@ -12,14 +12,14 @@
  * initialising (dd_epl259x.c: set_psensor_intr_threshold / enable_pflag).
  *
  * A buffering report carries three u32 values per sample regardless of sensor.
- * For this one the first is proximity and the second is ambient light, so both
- * are exposed as channels over the same scan layout the core pushes.
+ * Measured against a hand over the earpiece, the primary data type puts the
+ * SSC's near/far decision in the first and the reflected-infrared count in the
+ * second; the third stays zero.
  *
- * Only proximity is readable as a raw value. SINGLE_SENSOR_INFO reports two
- * data types for this sensor where the accelerometer has one, and the core
- * only ever asks for the primary, so which of the two the light reading really
- * comes from is not established yet; presenting it as a raw channel would have
- * userspace dim the screen by it.
+ * There is no light channel. SINGLE_SENSOR_INFO reports two data types for
+ * this sensor where the accelerometer has one, and the core only ever asks for
+ * the primary, so the ambient light reading is somewhere this driver cannot
+ * reach yet -- and a made-up one would have userspace dim the screen by it.
  */
 
 #include <linux/mod_devicetable.h>
@@ -106,7 +106,17 @@ static const struct iio_info smgr_prox_iio_info = {
 
 static const struct iio_chan_spec smgr_prox_iio_channels[] = {
 	{
+		/*
+		 * The SSC's own near/far decision, 1.0 in Q16 for near. It is
+		 * not filled in on the first sample of a report -- measured
+		 * with a hand on the sensor: this read 0 while the count below
+		 * read 13815 -- so it cannot back a raw read, and a poll would
+		 * answer "nothing near" with a hand on the phone. The buffer
+		 * still carries it.
+		 */
 		.type = IIO_PROXIMITY,
+		.indexed = true,
+		.channel = 0,
 		.scan_index = 0,
 		.scan_type = {
 			.sign = 'u',
@@ -114,16 +124,19 @@ static const struct iio_chan_spec smgr_prox_iio_channels[] = {
 			.storagebits = 32,
 			.endianness = IIO_LE,
 		},
+	},
+	{
 		/*
+		 * Reflected infrared, live from the first sample on. Measured
+		 * in a dark room: 0..485 with nothing near, 1579..2714 with a
+		 * hand over the earpiece, and the phone's factory calibration
+		 * in /persist puts the near threshold at 1570, between the two.
+		 *
 		 * iio-sensor-proxy, and so phosh's in-call blanking, has no
 		 * buffered proximity driver at all -- it polls in_proximity_raw
 		 * -- so this channel has to be readable without a buffer.
 		 */
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
-		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SAMP_FREQ),
-	},
-	{
-		.type = IIO_LIGHT,
+		.type = IIO_PROXIMITY,
 		.scan_index = 1,
 		.scan_type = {
 			.sign = 'u',
@@ -131,6 +144,7 @@ static const struct iio_chan_spec smgr_prox_iio_channels[] = {
 			.storagebits = 32,
 			.endianness = IIO_LE,
 		},
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SAMP_FREQ),
 	},
 	{
