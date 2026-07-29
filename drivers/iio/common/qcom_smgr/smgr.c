@@ -108,9 +108,12 @@ static int smgr_request_all_sensor_info(struct smgr *smgr,
 				GFP_KERNEL);
 
 	for (i = 0; i < resp.item_len; ++i) {
+		(*sensors)[i].smgr = smgr;
 		(*sensors)[i].id = resp.items[i].id;
 		(*sensors)[i].type =
 			sns_smgr_sensor_type_from_str(resp.items[i].type);
+		mutex_init(&(*sensors)[i].lock);
+		init_completion(&(*sensors)[i].sample_avail);
 	}
 
 	return resp.item_len;
@@ -267,6 +270,10 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
 			continue;
 
 		// TODO: handle multiple samples
+		memcpy(sensor->last_values, ind->samples[0].values,
+		       sizeof(sensor->last_values));
+		complete(&sensor->sample_avail);
+
 		iio_push_to_buffers_with_timestamp(sensor->iio_dev,
 						   ind->samples[0].values,
 						   ind->metadata.timestamp);
@@ -274,6 +281,50 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
 		break;
 	}
 }
+
+/**
+ * smgr_sensor_read_sample() - read one sample outside of the buffer
+ * @sensor: sensor to read
+ * @values: where to store the three values a report carries
+ *
+ * Starts a report if none is running, waits for the Sensor Manager to send
+ * one and stops it again. When a buffer is already running the sample it
+ * last pushed is returned instead, so that reading does not disturb it.
+ */
+int smgr_sensor_read_sample(struct smgr_sensor *sensor, u32 *values)
+{
+	bool streaming = iio_buffer_enabled(sensor->iio_dev);
+	int ret;
+
+	mutex_lock(&sensor->lock);
+
+	reinit_completion(&sensor->sample_avail);
+
+	if (!streaming) {
+		ret = smgr_request_buffering(sensor->smgr, sensor, true);
+		if (ret)
+			goto out;
+	}
+
+	ret = wait_for_completion_timeout(&sensor->sample_avail, HZ);
+
+	if (!streaming)
+		smgr_request_buffering(sensor->smgr, sensor, false);
+
+	if (!ret) {
+		ret = -ETIMEDOUT;
+		goto out;
+	}
+
+	memcpy(values, sensor->last_values, sizeof(sensor->last_values));
+	ret = 0;
+
+out:
+	mutex_unlock(&sensor->lock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(smgr_sensor_read_sample);
 
 static const struct qmi_msg_handler smgr_msg_handlers[] = {
 	{
