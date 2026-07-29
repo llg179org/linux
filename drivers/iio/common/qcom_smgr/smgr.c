@@ -250,6 +250,8 @@ static int smgr_request_buffering(struct smgr *smgr, struct smgr_sensor *sensor,
 
 	dev_dbg(smgr->dev, "Buffering response ack_nak %d\n", resp.ack_nak);
 
+	sensor->report_running = enable;
+
 	return 0;
 }
 
@@ -272,6 +274,7 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
 		// TODO: handle multiple samples
 		memcpy(sensor->last_values, ind->samples[0].values,
 		       sizeof(sensor->last_values));
+		sensor->have_sample = true;
 		complete(&sensor->sample_avail);
 
 		iio_push_to_buffers_with_timestamp(sensor->iio_dev,
@@ -287,32 +290,36 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
  * @sensor: sensor to read
  * @values: where to store the three values a report carries
  *
- * Starts a report if none is running, waits for the Sensor Manager to send
- * one and stops it again. When a buffer is already running the sample it
- * last pushed is returned instead, so that reading does not disturb it.
+ * Starts a report if none is running and returns the values of the most
+ * recent one. An on-change sensor reports when its reading changes and is
+ * quiet otherwise, so the stored values stay current between reports.
+ *
+ * The report is deliberately left running. Stopping it after each read and
+ * starting it again for the next one looks tidier, but on the Fairphone 3's
+ * SSC that pattern dies: the first such read returns a sample and every
+ * subsequent one times out until the sensor core is restarted.
  */
 int smgr_sensor_read_sample(struct smgr_sensor *sensor, u32 *values)
 {
-	bool streaming = iio_buffer_enabled(sensor->iio_dev);
 	int ret;
 
 	mutex_lock(&sensor->lock);
 
-	reinit_completion(&sensor->sample_avail);
+	if (!sensor->report_running) {
+		reinit_completion(&sensor->sample_avail);
 
-	if (!streaming) {
 		ret = smgr_request_buffering(sensor->smgr, sensor, true);
 		if (ret)
 			goto out;
+
+		if (!wait_for_completion_timeout(&sensor->sample_avail, HZ)) {
+			ret = -ETIMEDOUT;
+			goto out;
+		}
 	}
 
-	ret = wait_for_completion_timeout(&sensor->sample_avail, HZ);
-
-	if (!streaming)
-		smgr_request_buffering(sensor->smgr, sensor, false);
-
-	if (!ret) {
-		ret = -ETIMEDOUT;
+	if (!sensor->have_sample) {
+		ret = -EAGAIN;
 		goto out;
 	}
 
