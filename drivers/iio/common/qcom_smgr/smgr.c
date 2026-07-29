@@ -8,6 +8,7 @@
 #include <linux/iio/buffer.h>
 #include <linux/iio/common/qcom_smgr.h>
 #include <linux/iio/iio.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -20,6 +21,14 @@
 #include "qmi/sns_smgr.h"
 
 #define SMGR_REPORT_RATE_IN_HZ		0xf000
+
+/*
+ * Every sample carries the data type and sensor it came from packed into the
+ * report metadata, which is what tells the two halves of a combined sensor
+ * apart when one report covers both.
+ */
+#define SMGR_METADATA_DATA_TYPE(val1)	(((val1) >> 16) & 0xff)
+#define SMGR_METADATA_SENSOR_ID(val1)	(((val1) >> 8) & 0xff)
 
 struct smgr {
 	struct device *dev;
@@ -108,12 +117,16 @@ static int smgr_request_all_sensor_info(struct smgr *smgr,
 				GFP_KERNEL);
 
 	for (i = 0; i < resp.item_len; ++i) {
+		u8 j;
+
 		(*sensors)[i].smgr = smgr;
 		(*sensors)[i].id = resp.items[i].id;
 		(*sensors)[i].type =
 			sns_smgr_sensor_type_from_str(resp.items[i].type);
 		mutex_init(&(*sensors)[i].lock);
-		init_completion(&(*sensors)[i].sample_avail);
+
+		for (j = 0; j < SNS_SMGR_DATA_TYPE_COUNT; ++j)
+			init_completion(&(*sensors)[i].samples[j].avail);
 	}
 
 	return resp.item_len;
@@ -200,22 +213,38 @@ static int smgr_request_buffering(struct smgr *smgr, struct smgr_sensor *sensor,
 	int ret;
 
 	if (enable) {
+		u16 rate = 0;
+		u8 i;
+
 		req.action = SNS_SMGR_BUFFERING_ACTION_ADD;
-		/* TODO: Replace hardcoded values */
-		req.item_len = 1;
-		req.items[0].sensor_id = sensor->id;
-		req.items[0].data_type = SNS_SMGR_DATA_TYPE_PRIMARY;
-		req.items[0].decimation = 0x3;
-		req.items[0].calibration = 0xf;
-		req.report_rate = sensor->data_types[0].cur_sample_rate *
-				  SMGR_REPORT_RATE_IN_HZ;
-		req.items[0].sampling_rate =
-			sensor->data_types[0].cur_sample_rate;
+		/*
+		 * Ask for every data type the sensor advertises, not just the
+		 * primary one: a combined part such as the Fairphone 3's
+		 * EPL259x reports proximity as data type 0 and ambient light
+		 * as data type 1, and the light half is silent unless it is
+		 * asked for.
+		 */
+		req.item_len = min_t(u8, sensor->data_type_count,
+				     SNS_SMGR_DATA_TYPE_COUNT);
+
+		for (i = 0; i < req.item_len; ++i) {
+			req.items[i].sensor_id = sensor->id;
+			req.items[i].data_type = i;
+			/* TODO: Replace hardcoded values */
+			req.items[i].decimation = 0x3;
+			req.items[i].calibration = 0xf;
+			req.items[i].sampling_rate =
+				sensor->data_types[i].cur_sample_rate;
+
+			rate = max(rate, sensor->data_types[i].cur_sample_rate);
+		}
+
+		/* One report rate covers the whole request */
+		req.report_rate = rate * SMGR_REPORT_RATE_IN_HZ;
 
 		dev_dbg(smgr->dev,
-			"Requesting buffering for sensor 0x%02x, report rate: %d, sample rate: %d",
-			req.items[0].sensor_id, req.report_rate,
-			req.items[0].sampling_rate);
+			"Requesting buffering for sensor 0x%02x, %d data type(s), report rate: %d",
+			sensor->id, req.item_len, req.report_rate);
 	} else
 		req.action = SNS_SMGR_BUFFERING_ACTION_DELETE;
 
@@ -263,7 +292,17 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
 	struct sns_smgr_buffering_report_ind *ind =
 		(struct sns_smgr_buffering_report_ind *)data;
 	struct smgr_sensor *sensor;
+	struct smgr_sample *sample;
+	u8 data_type;
 	u8 i;
+
+	data_type = SMGR_METADATA_DATA_TYPE(ind->metadata.val1);
+	if (data_type >= SNS_SMGR_DATA_TYPE_COUNT) {
+		dev_warn_ratelimited(smgr->dev,
+				     "Report for unknown data type %d\n",
+				     data_type);
+		return;
+	}
 
 	for (i = 0; i < smgr->sensor_count; ++i) {
 		sensor = &smgr->sensors[i];
@@ -271,15 +310,23 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
 		if (sensor->id != ind->report_id)
 			continue;
 
-		// TODO: handle multiple samples
-		memcpy(sensor->last_values, ind->samples[0].values,
-		       sizeof(sensor->last_values));
-		sensor->have_sample = true;
-		complete(&sensor->sample_avail);
+		sample = &sensor->samples[data_type];
 
-		iio_push_to_buffers_with_timestamp(sensor->iio_dev,
-						   ind->samples[0].values,
-						   ind->metadata.timestamp);
+		// TODO: handle multiple samples
+		memcpy(sample->values, ind->samples[0].values,
+		       sizeof(sample->values));
+		sample->valid = true;
+		complete(&sample->avail);
+
+		/*
+		 * Only the primary data type has a place in the buffer: its
+		 * scan layout is fixed per device, so a secondary reading
+		 * would be pushed as if it were a primary one.
+		 */
+		if (data_type == SNS_SMGR_DATA_TYPE_PRIMARY)
+			iio_push_to_buffers_with_timestamp(
+				sensor->iio_dev, ind->samples[0].values,
+				ind->metadata.timestamp);
 
 		break;
 	}
@@ -288,6 +335,7 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
 /**
  * smgr_sensor_read_sample() - read one sample outside of the buffer
  * @sensor: sensor to read
+ * @data_type: which of the sensor's data types to read
  * @values: where to store the three values a report carries
  *
  * Starts a report if none is running and returns the values of the most
@@ -299,31 +347,39 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
  * SSC that pattern dies: the first such read returns a sample and every
  * subsequent one times out until the sensor core is restarted.
  */
-int smgr_sensor_read_sample(struct smgr_sensor *sensor, u32 *values)
+int smgr_sensor_read_sample(struct smgr_sensor *sensor,
+			    enum smgr_data_type data_type, u32 *values)
 {
+	struct smgr_sample *sample;
 	int ret;
+
+	if (data_type >= SNS_SMGR_DATA_TYPE_COUNT ||
+	    data_type >= sensor->data_type_count)
+		return -EINVAL;
+
+	sample = &sensor->samples[data_type];
 
 	mutex_lock(&sensor->lock);
 
 	if (!sensor->report_running) {
-		reinit_completion(&sensor->sample_avail);
+		reinit_completion(&sample->avail);
 
 		ret = smgr_request_buffering(sensor->smgr, sensor, true);
 		if (ret)
 			goto out;
 
-		if (!wait_for_completion_timeout(&sensor->sample_avail, HZ)) {
+		if (!wait_for_completion_timeout(&sample->avail, HZ)) {
 			ret = -ETIMEDOUT;
 			goto out;
 		}
 	}
 
-	if (!sensor->have_sample) {
+	if (!sample->valid) {
 		ret = -EAGAIN;
 		goto out;
 	}
 
-	memcpy(values, sensor->last_values, sizeof(sensor->last_values));
+	memcpy(values, sample->values, sizeof(sample->values));
 	ret = 0;
 
 out:
@@ -416,8 +472,8 @@ static int smgr_probe(struct qrtr_device *qdev)
 
 		for (j = 0; j < smgr->sensors[i].data_type_count; j++) {
 			/* Default to maximum sample rate */
-			smgr->sensors[i].data_types->cur_sample_rate =
-				smgr->sensors[i].data_types->max_sample_rate;
+			smgr->sensors[i].data_types[j].cur_sample_rate =
+				smgr->sensors[i].data_types[j].max_sample_rate;
 
 			dev_dbg(smgr->dev, "0x%02x,%d: %s %s\n",
 				smgr->sensors[i].id, j,
