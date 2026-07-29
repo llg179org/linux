@@ -38,12 +38,19 @@
 	};
 
 	/*
-	 * Battery profile from the Fairphone downstream qg-batterydata
-	 * (max-voltage 4.39 V, 3000 mAh). The pack is rated for 2.7 A, but this
-	 * asks for 2 A: without high-voltage negotiation the input side tops
-	 * out near 1.5 A at 5 V anyway, and at 2 A the charger's JEITA
-	 * compensation can still reach this pack's characterised 600 mA
-	 * cool-zone current, which it cannot at 2.7 A.
+	 * Battery profile from the Fairphone downstream qg-batterydata.
+	 *
+	 * The FP3 ships two different 3000 mAh packs, told apart at runtime by
+	 * a battery-ID resistor: "Kayo" at 50 kOhm, rated 2.7 A, and "Fuji" at
+	 * 10 kOhm, rated 2.0 A. A simple-battery node cannot choose, so this
+	 * describes Fuji - the pack in the phone this was developed on, whose
+	 * downstream stack reports batt-id 9843 and selects
+	 * qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632.
+	 *
+	 * That means the current below is the pack's full rating, not a
+	 * reduction of it. A Kayo phone charges 700 mA slower than it could;
+	 * fixing that needs the battery-ID channel read, which mainline does
+	 * not do yet.
 	 */
 	fp3_battery: battery {
 		compatible = "simple-battery";
@@ -56,27 +63,27 @@
 		/*
 		 * Voltage-based fuel gauge: OCV->capacity lookup table.
 		 * Extracted from the downstream Fairphone qpnp-qg battery
-		 * profile (qg-batterydata-Kayo-3000mah-Nov4th2019-pmi632,
+		 * profile (qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632,
 		 * pc-temp-v1-lut, 25 degC column). Values converted from the
 		 * downstream 100uV units to microvolts. This is the same OCV
 		 * characterisation the downstream QG gauge uses; the mainline
 		 * power-supply core interpolates capacity from it.
 		 */
 		ocv-capacity-celsius = <25>;
-		ocv-capacity-table-0 = <4383100 100>, <4357500 98>, <4332500 96>, <4308200 94>,
-			<4284000 92>, <4260000 90>, <4236300 88>, <4212900 86>,
-			<4189900 84>, <4167300 82>, <4144900 80>, <4124000 78>,
-			<4105600 76>, <4086900 74>, <4063800 72>, <4038100 70>,
-			<4017500 68>, <4001900 66>, <3987500 64>, <3973200 62>,
-			<3958900 60>, <3940200 58>, <3914200 56>, <3891000 54>,
-			<3875700 52>, <3863600 50>, <3854000 48>, <3846400 46>,
-			<3839400 44>, <3832500 42>, <3826200 40>, <3820300 38>,
-			<3815000 36>, <3810200 34>, <3806200 32>, <3802500 30>,
-			<3798900 28>, <3795300 26>, <3790200 24>, <3781500 22>,
-			<3770800 20>, <3759600 18>, <3746800 16>, <3731200 14>,
-			<3716600 12>, <3707000 10>, <3704400 9>, <3703100 8>,
-			<3701300 7>, <3697600 6>, <3676700 5>, <3634800 4>,
-			<3578500 3>, <3501900 2>, <3383200 1>, <3000000 0>;
+		ocv-capacity-table-0 = <4375600 100>, <4353300 98>, <4328800 96>, <4304800 94>,
+			<4281100 92>, <4257500 90>, <4234200 88>, <4211000 86>,
+			<4188100 84>, <4165400 82>, <4142900 80>, <4121200 78>,
+			<4100700 76>, <4080700 74>, <4060200 72>, <4039500 70>,
+			<4020600 68>, <4003800 66>, <3988000 64>, <3972500 62>,
+			<3957300 60>, <3941900 58>, <3926800 56>, <3910400 54>,
+			<3890000 52>, <3868700 50>, <3854500 48>, <3844500 46>,
+			<3836800 44>, <3830600 42>, <3825500 40>, <3821400 38>,
+			<3818200 36>, <3814800 34>, <3811300 32>, <3807600 30>,
+			<3803700 28>, <3799500 26>, <3793600 24>, <3784200 22>,
+			<3772700 20>, <3760900 18>, <3747700 16>, <3732200 14>,
+			<3717500 12>, <3707900 10>, <3705400 9>, <3703200 8>,
+			<3701500 7>, <3698400 6>, <3682100 5>, <3644100 4>,
+			<3591600 3>, <3520900 2>, <3415500 1>, <3000000 0>;
 	};
 
 	vreg_cam_af_2p85: regulator-cam-af-2p85 {
@@ -378,12 +385,14 @@
 	 * JEITA comparator thresholds, as raw BAT_THERM ADC codes, and the
 	 * fast-charge current to hold in each soft zone. All four codes and
 	 * both currents are Fairphone's characterisation of this pack, read out
-	 * of qg-batterydata-Kayo-3000mah-Nov4th2019-pmi632: hard limits at 0
-	 * and 55 degC, soft limits at 20 and 45 degC, and the jeita-fcc-ranges
-	 * entries for the zones outside those soft limits.
+	 * of qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632: hard limits at 0
+	 * and 55 degC, soft limits at 15 and 45 degC, and the jeita-fcc-ranges
+	 * entries for the zones outside those soft limits. Verified against a
+	 * phone running the downstream stack, which programs exactly these four
+	 * codes into these registers.
 	 */
 	qcom,jeita-hard-thresholds = <0x5675 0x1987>;
-	qcom,jeita-soft-thresholds = <0x3ebc 0x2204>;
+	qcom,jeita-soft-thresholds = <0x44ff 0x2204>;
 	qcom,jeita-soft-fcc-microamp = <600000 1000000>;
 
 	/* Downstream's mitigation table, minus its repeated last entry. */
