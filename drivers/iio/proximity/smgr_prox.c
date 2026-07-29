@@ -16,10 +16,16 @@
  * SSC's near/far decision in the first and the reflected-infrared count in the
  * second; the third stays zero.
  *
- * There is no light channel. SINGLE_SENSOR_INFO reports two data types for
- * this sensor where the accelerometer has one, and the core only ever asks for
- * the primary, so the ambient light reading is somewhere this driver cannot
- * reach yet -- and a made-up one would have userspace dim the screen by it.
+ * The same part is also the ambient light sensor, as its name from
+ * SINGLE_SENSOR_INFO says: "EPL259x ALS/PS". PS is the primary data type, ALS
+ * the secondary one, and the secondary is silent unless the core asks for it.
+ * Measured with a hand over the sensor and then a torch shone into it: the
+ * light half puts illuminance in lux in the first value as a Q16 fixed-point
+ * number -- always a whole number of lux, so the low 16 bits are zero -- and
+ * the raw ADC count behind it in the second, at a steady 2.598 counts per lux.
+ * A covered sensor reads exactly 0, a dim room 7..24 lux, and a torch drives it
+ * to 25230 lux, where the count reaches 65535 and stops: the reading saturates
+ * there rather than rolling over.
  */
 
 #include <linux/mod_devicetable.h>
@@ -29,24 +35,43 @@
 #include <linux/iio/iio.h>
 #include <linux/iio/kfifo_buf.h>
 
+/* Illuminance arrives as Q16 fixed point */
+#define SMGR_PROX_LIGHT_SCALE		65536
+
+/* Proximity is the primary data type of this part, ambient light the secondary */
+static enum smgr_data_type smgr_prox_data_type(struct iio_chan_spec const *chan)
+{
+	return chan->type == IIO_LIGHT ? SNS_SMGR_DATA_TYPE_SECONDARY :
+					 SNS_SMGR_DATA_TYPE_PRIMARY;
+}
+
 static int smgr_prox_read_raw(struct iio_dev *iio_dev,
 			      struct iio_chan_spec const *chan, int *val,
 			      int *val2, long mask)
 {
 	struct smgr_iio_priv *priv = iio_priv(iio_dev);
+	enum smgr_data_type data_type = smgr_prox_data_type(chan);
 	u32 values[SMGR_SAMPLE_VALUES];
 	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = smgr_sensor_read_sample(priv->sensor, values);
+		ret = smgr_sensor_read_sample(priv->sensor, data_type, values);
 		if (ret)
 			return ret;
 
 		*val = values[chan->scan_index];
 		return IIO_VAL_INT;
+	case IIO_CHAN_INFO_PROCESSED:
+		ret = smgr_sensor_read_sample(priv->sensor, data_type, values);
+		if (ret)
+			return ret;
+
+		*val = values[0];
+		*val2 = SMGR_PROX_LIGHT_SCALE;
+		return IIO_VAL_FRACTIONAL;
 	case IIO_CHAN_INFO_SAMP_FREQ:
-		*val = priv->sensor->data_types[0].cur_sample_rate;
+		*val = priv->sensor->data_types[data_type].cur_sample_rate;
 		return IIO_VAL_INT;
 	}
 
@@ -61,7 +86,8 @@ static int smgr_prox_write_raw(struct iio_dev *iio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
-		priv->sensor->data_types[0].cur_sample_rate = val;
+		priv->sensor->data_types[smgr_prox_data_type(chan)]
+			.cur_sample_rate = val;
 
 		/*
 		 * Send a new SMGR buffering request with the updated rate if
@@ -88,7 +114,9 @@ static int smgr_prox_read_avail(struct iio_dev *iio_dev,
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		samp_freq_vals[0] = 1;
 		samp_freq_vals[1] = 1;
-		samp_freq_vals[2] = priv->sensor->data_types[0].max_sample_rate;
+		samp_freq_vals[2] =
+			priv->sensor->data_types[smgr_prox_data_type(chan)]
+				.max_sample_rate;
 		*type = IIO_VAL_INT;
 		*vals = samp_freq_vals;
 		*length = ARRAY_SIZE(samp_freq_vals);
@@ -145,6 +173,21 @@ static const struct iio_chan_spec smgr_prox_iio_channels[] = {
 			.endianness = IIO_LE,
 		},
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SAMP_FREQ),
+	},
+	{
+		/*
+		 * Ambient light, from the secondary data type of the same part.
+		 * Reported straight in lux, so it is a processed channel and
+		 * needs no scale; userspace reads in_illuminance_input.
+		 *
+		 * It is not a scan element: the buffer's layout is fixed by the
+		 * primary data type, and a light sample pushed into it would
+		 * arrive as a proximity one.
+		 */
+		.type = IIO_LIGHT,
+		.scan_index = -1,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_PROCESSED),
 		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SAMP_FREQ),
 	},
 	{

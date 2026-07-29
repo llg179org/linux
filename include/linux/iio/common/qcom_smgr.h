@@ -39,6 +39,19 @@ struct smgr_data_type_item
 
 #define SMGR_SAMPLE_VALUES		3
 
+/*
+ * Last sample the Sensor Manager sent for one data type, kept so it can be
+ * read without a buffer. On-change sensors such as the proximity one send a
+ * report when the reading changes and then stay quiet, so the buffer alone
+ * leaves nothing to read between changes.
+ */
+struct smgr_sample
+{
+	struct completion avail;
+	bool valid;
+	u32 values[SMGR_SAMPLE_VALUES];
+};
+
 struct smgr_sensor
 {
 	struct smgr *smgr;
@@ -50,17 +63,9 @@ struct smgr_sensor
 
 	struct iio_dev *iio_dev;
 
-	/*
-	 * Last sample the Sensor Manager sent for this sensor, kept so it can
-	 * be read without a buffer. On-change sensors such as the proximity
-	 * one send a report when the reading changes and then stay quiet, so
-	 * the buffer alone leaves nothing to read between changes.
-	 */
 	struct mutex lock;
-	struct completion sample_avail;
 	bool report_running;
-	bool have_sample;
-	u32 last_values[SMGR_SAMPLE_VALUES];
+	struct smgr_sample samples[SNS_SMGR_DATA_TYPE_COUNT];
 };
 
 struct smgr_iio_priv
@@ -70,6 +75,7 @@ struct smgr_iio_priv
 
 extern struct iio_buffer_setup_ops smgr_buffer_ops;
 
-int smgr_sensor_read_sample(struct smgr_sensor *sensor, u32 *values);
+int smgr_sensor_read_sample(struct smgr_sensor *sensor,
+			    enum smgr_data_type data_type, u32 *values);
 
 #endif /* __QCOM_SMGR_H__ */
