@@ -38,6 +38,14 @@ static int smgr_mag_read_raw(struct iio_dev *iio_dev,
 		 * here and the sensor's own unit is more likely microtesla, so
 		 * this is two assumptions deep and needs a compass reading
 		 * against a known heading before it can be trusted.
+		 *
+		 * Measured: the channels follow rotation clearly, but at rest
+		 * they read (0.35, -1.22, 0.36) with this scale, and the
+		 * magnitude swings between 0.6 and 2.8 while turning instead
+		 * of staying at the Earth's field. That is a large hard-iron
+		 * offset -- the phone's own magnets -- on top of an unverified
+		 * scale, so neither number can be calibrated out of the other
+		 * without a full-sphere fit.
 		 */
 		*val = 0;
 		*val2 = 15259; /* 10^9 / 2^16 */
