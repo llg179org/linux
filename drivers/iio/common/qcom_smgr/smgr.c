@@ -342,6 +342,13 @@ static void smgr_buffering_report_handler(struct qmi_handle *hdl,
  * recent one. An on-change sensor reports when its reading changes and is
  * quiet otherwise, so the stored values stay current between reports.
  *
+ * Waits on the requested data type rather than on the report. One report
+ * covers every data type of a sensor, so a report started for one of them is
+ * already running when another is first read -- and that data type has no
+ * sample yet. Treating a running report as proof that this data type has
+ * reported fails the first read of the ambient light half of the proximity
+ * sensor whenever the light has not changed since the report began.
+ *
  * The report is deliberately left running. Stopping it after each read and
  * starting it again for the next one looks tidier, but on the Fairphone 3's
  * SSC that pattern dies: the first such read returns a sample and every
@@ -367,15 +374,16 @@ int smgr_sensor_read_sample(struct smgr_sensor *sensor,
 		ret = smgr_request_buffering(sensor->smgr, sensor, true);
 		if (ret)
 			goto out;
-
-		if (!wait_for_completion_timeout(&sample->avail, HZ)) {
-			ret = -ETIMEDOUT;
-			goto out;
-		}
 	}
 
-	if (!sample->valid) {
-		ret = -EAGAIN;
+	/*
+	 * A sample that already arrived has left the completion signalled, so
+	 * this returns at once; it only blocks when this data type has yet to
+	 * report.
+	 */
+	if (!sample->valid &&
+	    !wait_for_completion_timeout(&sample->avail, HZ)) {
+		ret = -ETIMEDOUT;
 		goto out;
 	}
 
