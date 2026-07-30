@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/watchdog.h>
 
 enum wdt_reg {
@@ -289,10 +290,27 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 	 * will stop the WDT, set timeouts as bootloader
 	 * might use different ones and set running bit
 	 * to inform the WDT subsystem to ping the WDT
+	 *
+	 * The WDOG_HW_RUNNING handling above is Robert Marko's (commit
+	 * 8650d0f9e933, "watchdog: qcom_wdt: set WDOG_HW_RUNNING bit when
+	 * appropriate"), on Josh Cartwright's original KPSS WDT driver.
+	 *
+	 * Added here: if the watchdog is NOT already running, start it anyway
+	 * when the device tree asks for it. Boards whose bootloader leaves the
+	 * watchdog disabled otherwise have no watchdog at all between the start
+	 * of the kernel and the moment userspace opens /dev/watchdog -- which is
+	 * exactly the window an early boot hang falls into, and the one where an
+	 * unattended device most needs to reset itself. With the bit set, the
+	 * watchdog core pings the hardware for us and enforces
+	 * CONFIG_WATCHDOG_OPEN_TIMEOUT.
 	 */
 	if (qcom_wdt_is_running(&wdt->wdd)) {
 		qcom_wdt_start(&wdt->wdd);
 		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
+	} else if (device_property_read_bool(dev, "qcom,start-at-probe")) {
+		qcom_wdt_start(&wdt->wdd);
+		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
+		dev_info(dev, "started at probe (bootloader left it disabled)\n");
 	}
 
 	ret = devm_watchdog_register_device(dev, &wdt->wdd);
