@@ -12,7 +12,7 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #define IMX363_REG_MODE_SELECT	CCI_REG8(0x0100)
 #define IMX363_MODE_STANDBY		0x00
@@ -241,7 +241,7 @@ static const struct cci_reg_sequence mipi_642mbps_24mhz_4l[] = {
 };
 
 static const struct cci_reg_sequence mode_common_regs[] = {
-	//Magical IMX363 Regs & Values - Found in downstream. Doesnt affect output except for the few noted. So disable.
+	//Magical IMX363 Regs & Values - Found in downstream. Doesn't affect output except for the few noted. So disable.
 	// { CCI_REG8(0x31a3), 0x00 },
 	// { CCI_REG8(0x64d4), 0x01 },
 	// { CCI_REG8(0x64d5), 0xaa },
@@ -278,9 +278,9 @@ static const struct cci_reg_sequence mode_common_regs[] = {
 	// { CCI_REG8(0x7928), 0x04 },
 	// { CCI_REG8(0x7929), 0x04 },
 	// { CCI_REG8(0x793F), 0x03 },
-	
-	// present in imx258. not present in android downstream logs. doesnt seem to affect output.
-	// {IMX363_REG_SCALE_MODE_EXT, 0}, 
+
+	// present in imx258. not present in android downstream logs. doesn't seem to affect output.
+	// {IMX363_REG_SCALE_MODE_EXT, 0},
 	// {IMX363_REG_SCALE_M_EXT, 16},
 	// {IMX363_REG_FORCE_FD_SUM, 1},
 	// {IMX363_REG_FRM_LENGTH_CTL, 0},
@@ -293,7 +293,7 @@ static const struct cci_reg_sequence mode_common_regs[] = {
 	// {IMX363_REG_PHASE_PIX_OUTEN, 0},
 	// {IMX363_REG_PDPIX_DATA_RATE, 0},
 	// {IMX363_REG_HDR, 0},
-	
+
 	// Seems important. Probably will work even without specifying these. But let's just set it anyway.
 	// {IMX363_REG_CSI_DT_FMT, 0x0a0a},
 	// {IMX363_REG_LINE_LENGTH_PCK, IMX363_PPL_DEFAULT},
@@ -509,8 +509,8 @@ static u64 link_freq_to_pixel_rate(u64 f, const struct imx363_link_cfg *link_cfg
 /* Menu items for LINK_FREQ V4L2 control */
 /* Configurations for supported link frequencies */
 // static const s64 link_freq_menu_items_19_2[] = {
-// 	633600000ULL,
-// 	320000000ULL,
+//	633600000ULL,
+//	320000000ULL,
 // };
 
 static const s64 link_freq_menu_items_24[] = {
@@ -1037,7 +1037,8 @@ static int imx363_power_on(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx363 *imx363 = to_imx363(sd);
-	int ret;
+	int ret, tries;
+	u64 val;
 
 	ret = regulator_bulk_enable(IMX363_NUM_SUPPLIES,
 				    imx363->supplies);
@@ -1047,17 +1048,50 @@ static int imx363_power_on(struct device *dev)
 		return ret;
 	}
 
-	usleep_range(400, 600);
+	/* Let the power rails settle before starting the input clock. */
+	usleep_range(1000, 1500);
 
-	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
-
+	/*
+	 * IMX363 requires INCK (MCLK) to be running and stable *before*
+	 * XCLR (reset) is released, otherwise the sensor never boots and
+	 * the first I2C access to the chip-id register times out.
+	 */
 	ret = clk_prepare_enable(imx363->clk);
 	if (ret) {
 		dev_err(dev, "failed to enable clock\n");
 		regulator_bulk_disable(IMX363_NUM_SUPPLIES, imx363->supplies);
+		return ret;
 	}
 
-	usleep_range(1000, 1200);
+	/* Wait for INCK to stabilise. */
+	usleep_range(1000, 1500);
+
+	/* Release reset (XCLR high on this board). */
+	gpiod_set_value_cansleep(imx363->reset_gpio, 1);
+
+	/*
+	 * Sensor internal boot + register-access-ready delay. On the FP3 the
+	 * GPIO-switched camera rails settle slowly; the IMX363 only ACKs on
+	 * I2C ~150 ms after power-up, so the original ~10 ms was far too short
+	 * and every chip-id read timed out. Give it a generous margin.
+	 */
+	msleep(200);
+
+	/*
+	 * Warm up the I2C link before returning. The very first transaction
+	 * after power-up reliably times out on this board (slow GPIO-switched
+	 * rails); power_on() runs on every runtime-PM resume -- not just at
+	 * probe -- so absorb that cold transaction here. Otherwise the first
+	 * register writes the caller issues to start streaming time out and
+	 * the CAMSS VFE never receives frames ("Failed to start streaming"),
+	 * which is externally visible as the viewfinder going blank after
+	 * the screen is locked and unlocked while the camera is open.
+	 */
+	for (tries = 0; tries < 5; tries++) {
+		if (!cci_read(imx363->regmap, IMX363_REG_CHIP_ID, &val, NULL))
+			break;
+		usleep_range(5000, 6000);
+	}
 
 	return 0;
 }
@@ -1120,8 +1154,11 @@ static int imx363_identify_module(struct imx363 *imx363)
 	int ret;
 	u64 val;
 
-	ret = cci_read(imx363->regmap, IMX363_REG_CHIP_ID,
-		       &val, NULL);
+	/*
+	 * power_on() already retries a warm-up read to absorb the FP3's cold
+	 * first-I2C-transaction timeout, so a single read here is enough.
+	 */
+	ret = cci_read(imx363->regmap, IMX363_REG_CHIP_ID, &val, NULL);
 	if (ret) {
 		dev_err(&client->dev, "failed to read chip id %x\n",
 			IMX363_CHIP_ID);
@@ -1289,11 +1326,28 @@ static int imx363_get_regulators(struct imx363 *imx363,
 {
 	unsigned int i;
 
+	int ret;
+
 	for (i = 0; i < IMX363_NUM_SUPPLIES; i++)
 		imx363->supplies[i].supply = imx363_supply_name[i];
 
-	return devm_regulator_bulk_get(&client->dev,
+	ret = devm_regulator_bulk_get(&client->dev,
 				    IMX363_NUM_SUPPLIES, imx363->supplies);
+	if (ret)
+		return ret;
+
+	/*
+	 * vdig (index 1) is a shared PMIC LDO that otherwise sits at its
+	 * 0.975V minimum; the IMX363 digital core needs 1.175V or it never
+	 * boots and the chip-id read times out. Pin it explicitly.
+	 */
+	ret = regulator_set_voltage(imx363->supplies[1].consumer,
+				    1175000, 1175000);
+	if (ret)
+		dev_warn(&client->dev,
+			 "failed to set vdig to 1.175V: %d\n", ret);
+
+	return 0;
 }
 
 static int imx363_probe(struct i2c_client *client)
@@ -1327,8 +1381,8 @@ static int imx363_probe(struct i2c_client *client)
 		return dev_err_probe(&client->dev, PTR_ERR(imx363->clk),
 				     "error getting clock\n");
 	// if (!imx363->clk) {
-	// 	dev_warn(&client->dev,
-	// 		"no clock provided, using clock-frequency property\n");
+	//	dev_warn(&client->dev,
+	//		"no clock provided, using clock-frequency property\n");
 
 	device_property_read_u32(&client->dev, "clock-frequency", &val);
 	// } else {
@@ -1341,9 +1395,9 @@ static int imx363_probe(struct i2c_client *client)
 
 	switch (val) {
 	// case 19200000:
-	// 	imx363->link_freq_configs = link_freq_configs_19_2;
-	// 	imx363->link_freq_menu_items = link_freq_menu_items_19_2;
-	// 	break;
+	//	imx363->link_freq_configs = link_freq_configs_19_2;
+	//	imx363->link_freq_menu_items = link_freq_menu_items_19_2;
+	//	break;
 	case 24000000:
 		imx363->link_freq_configs = link_freq_configs_24;
 		imx363->link_freq_menu_items = link_freq_menu_items_24;
@@ -1511,4 +1565,4 @@ MODULE_AUTHOR("Yeh, Andy <andy.yeh@intel.com>");
 MODULE_AUTHOR("Chiang, Alan");
 MODULE_AUTHOR("Chen, Jason");
 MODULE_DESCRIPTION("Sony IMX363 sensor driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
