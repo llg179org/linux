@@ -159,6 +159,38 @@
 		regulator-always-on;
 		regulator-boot-on;
 	};
+
+	wcd_vout_1p8: regulator-wcd-vout-1p8 {
+		compatible = "regulator-fixed";
+		regulator-name = "wcd-vout-1p8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&tlmm 50 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/*
+	 * Codec MCLK: PM8953 gpio1-gated clock off RPM DIV_CLK2, exactly as the
+	 * downstream FP3 audio config sources it (the same RPM XO-buffer clock,
+	 * which downstream labels "clk_div_clk2").
+	 */
+	divclk1_cdc: divclk1 {
+		compatible = "gpio-gate-clock";
+		clocks = <&rpmcc RPM_SMD_DIV_CLK2>;
+		#clock-cells = <0>;
+		enable-gpios = <&pm8953_gpios 1 GPIO_ACTIVE_HIGH>;
+		/*
+		 * Must be the "default" state: the gpio-gate-clock driver does not
+		 * select pinctrl states itself, so only "default" is applied
+		 * automatically at probe. With custom "active"/"sleep" names the
+		 * gpio1 func1 mux stays UNCLAIMED (pad in its normal-GPIO reset
+		 * function) and the divider clock never reaches the WCD9335 MCLK
+		 * pin, even though the gate GPIO value is driven. (apq8096-db820c
+		 * uses "default" for the same divclk1 mclk.)
+		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&tasha_mclk_default>;
+	};
 };
 
 &cci {
@@ -836,7 +868,6 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-down;
-		input-enable;
 	};
 
 	cdc_reset_active: cdc-reset-active-state {
@@ -864,38 +895,6 @@
 };
 
 &soc {
-	/*
-	 * Codec MCLK: PM8953 gpio1-gated clock off RPM DIV_CLK2, exactly as the
-	 * downstream FP3 audio config sources it (the same RPM XO-buffer clock,
-	 * which downstream labels "clk_div_clk2").
-	 */
-	divclk1_cdc: divclk1 {
-		compatible = "gpio-gate-clock";
-		clocks = <&rpmcc RPM_SMD_DIV_CLK2>;
-		#clock-cells = <0>;
-		enable-gpios = <&pm8953_gpios 1 GPIO_ACTIVE_HIGH>;
-		/*
-		 * Must be the "default" state: the gpio-gate-clock driver does not
-		 * select pinctrl states itself, so only "default" is applied
-		 * automatically at probe. With custom "active"/"sleep" names the
-		 * gpio1 func1 mux stays UNCLAIMED (pad in its normal-GPIO reset
-		 * function) and the divider clock never reaches the WCD9335 MCLK
-		 * pin, even though the gate GPIO value is driven. (apq8096-db820c
-		 * uses "default" for the same divclk1 mclk.)
-		 */
-		pinctrl-names = "default";
-		pinctrl-0 = <&tasha_mclk_default>;
-	};
-
-	wcd_vout_1p8: wcd-vout-1p8 {
-		compatible = "regulator-fixed";
-		regulator-name = "wcd-vout-1p8";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-		gpio = <&tlmm 50 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-	};
-
 	slimbam: dma-controller@c104000 {
 		compatible = "qcom,bam-v1.7.0";
 		qcom,controlled-remotely;
