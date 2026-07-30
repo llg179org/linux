@@ -73,6 +73,40 @@ properties:
   vdd-vbat-supply:
     description: vbat supply
 
+  qcom,micbias1-microvolt:
+    description: micbias1 voltage
+    minimum: 1800000
+    maximum: 2850000
+
+  qcom,micbias2-microvolt:
+    description: micbias2 voltage
+    minimum: 1800000
+    maximum: 2850000
+
+  qcom,micbias3-microvolt:
+    description: micbias3 voltage
+    minimum: 1800000
+    maximum: 2850000
+
+  qcom,micbias4-microvolt:
+    description: micbias4 voltage
+    minimum: 1800000
+    maximum: 2850000
+
+  qcom,dmic-sample-rate:
+    description:
+      Clock rate of the digital microphones, in Hz. The codec derives it
+      from mclk with a divider of 2, 3, 4, 6, 8 or 16, so only those
+      fractions of the mclk rate can be expressed.
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  qcom,mbhc-buttons-vthreshold-microvolt:
+    description:
+      Array of 8 voltage threshold values corresponding to headset
+      button0 - button7. Omitting it disables button detection.
+    minItems: 8
+    maxItems: 8
+
 required:
   - compatible
   - reg
@@ -116,6 +150,12 @@ allOf:
         vdd-rx-supply: false
         vdd-tx-supply: false
         vdd-vbat-supply: false
+        qcom,micbias1-microvolt: false
+        qcom,micbias2-microvolt: false
+        qcom,micbias3-microvolt: false
+        qcom,micbias4-microvolt: false
+        qcom,dmic-sample-rate: false
+        qcom,mbhc-buttons-vthreshold-microvolt: false
 
 additionalProperties: false
 
