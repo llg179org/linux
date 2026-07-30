@@ -406,7 +406,22 @@ static int qmi_encode(const struct qmi_elem_info *ei_array, void *out_buf,
 			break;
 
 		case QMI_DATA_LEN:
-			memcpy(&data_len_value, buf_src, sizeof(u32));
+			/*
+			 * Read exactly as many bytes as the length field is
+			 * wide.  Copying four unconditionally pulls in whatever
+			 * follows the field in the C struct, which for a u8
+			 * length is three bytes of the next member.  That is
+			 * usually zero, so this went unnoticed; it stops being
+			 * zero as soon as the following member is non-zero, and
+			 * the bogus length then fails the elem_len check above
+			 * with -EINVAL.
+			 */
+			if (temp_ei->elem_size == sizeof(u8))
+				data_len_value = *(u8 *)buf_src;
+			else if (temp_ei->elem_size == sizeof(u16))
+				data_len_value = *(u16 *)buf_src;
+			else
+				memcpy(&data_len_value, buf_src, sizeof(u32));
 			data_len_sz = temp_ei->elem_size == sizeof(u8) ?
 					sizeof(u8) : sizeof(u16);
 			/* Check to avoid out of range buffer access */
