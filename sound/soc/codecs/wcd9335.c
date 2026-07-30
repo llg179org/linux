@@ -2307,23 +2307,23 @@ static const struct snd_kcontrol_new wcd9335_snd_controls[] = {
 	SOC_SINGLE_S8_TLV("RX8 Digital Volume", WCD9335_CDC_RX8_RX_VOL_CTL,
 			-84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC0 Volume", WCD9335_CDC_TX0_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC1 Volume", WCD9335_CDC_TX1_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC2 Volume", WCD9335_CDC_TX2_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC3 Volume", WCD9335_CDC_TX3_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC4 Volume", WCD9335_CDC_TX4_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC5 Volume", WCD9335_CDC_TX5_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC6 Volume", WCD9335_CDC_TX6_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC7 Volume", WCD9335_CDC_TX7_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("DEC8 Volume", WCD9335_CDC_TX8_TX_VOL_CTL,
-			-84, 40, digital_gain),
+			  -84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("RX0 Mix Digital Volume", WCD9335_CDC_RX0_RX_VOL_MIX_CTL,
 			-84, 40, digital_gain),
 	SOC_SINGLE_S8_TLV("RX1 Mix Digital Volume", WCD9335_CDC_RX1_RX_VOL_MIX_CTL,
@@ -2602,8 +2602,8 @@ static int wcd9335_micbias_control(struct snd_soc_component *component,
 			 * a correspondingly quiet capture.
 			 */
 			snd_soc_component_update_bits(component, micb_reg,
-						WCD9335_ANA_MICB_VOUT_MASK,
-						wcd->micb_vout[micb_index]);
+						      WCD9335_ANA_MICB_VOUT_MASK,
+						      wcd->micb_vout[micb_index]);
 			snd_soc_component_update_bits(component, micb_reg,
 							0xC0, 0x40);
 		}
@@ -4016,8 +4016,8 @@ static irqreturn_t wcd9335_mbhc_sw_irq(int irq, void *data)
 
 	/* Re-arm L_DET for the opposite edge (detect removal once inserted). */
 	snd_soc_component_update_bits(component, WCD9335_ANA_MBHC_MECH,
-			WCD9335_MBHC_MECH_DETECT_TYPE_MASK,
-			ins << WCD9335_MBHC_MECH_DETECT_TYPE_SHIFT);
+				      WCD9335_MBHC_MECH_DETECT_TYPE_MASK,
+				      ins << WCD9335_MBHC_MECH_DETECT_TYPE_SHIFT);
 
 	if (ins) { /* hs insertion */
 		u32 btndet_curr_src;
@@ -4027,7 +4027,7 @@ static irqreturn_t wcd9335_mbhc_sw_irq(int irq, void *data)
 		 * current source for Button detection
 		 */
 		if (snd_soc_component_read(component, WCD9335_ANA_MICB2) &
-						WCD9335_ANA_MICB2_ENABLE)
+		    WCD9335_ANA_MICB2_ENABLE)
 			btndet_curr_src = WCD9335_ANA_MBHC_BD_ISRC_OFF;
 		else
 			btndet_curr_src = WCD9335_ANA_MBHC_BD_ISRC_100UA;
@@ -4153,7 +4153,7 @@ static irqreturn_t wcd9335_mbhc_bt_rel_irq(int irq, void *data)
 
 	if (wcd->detect_accessory_type) {
 		u32 result = snd_soc_component_read(wcd->component,
-						WCD9335_ANA_MBHC_RESULT_3);
+						    WCD9335_ANA_MBHC_RESULT_3);
 
 		/* check if its BTN0 thats released */
 		if (!(result & WCD9335_MBHC_BTN_RESULT_MASK))
@@ -4174,8 +4174,8 @@ static void wcd9335_program_btn_threshold(struct wcd9335_codec *wcd)
 	for (i = 0; i < WCD9335_MBHC_MAX_BUTTONS; i++) {
 		vth = ((wcd->vref_btn[i] * 2) / 25) & 0x3F;
 		snd_soc_component_update_bits(wcd->component,
-					WCD9335_ANA_MBHC_BTN0 + i,
-					0xFC, vth << 2);
+					      WCD9335_ANA_MBHC_BTN0 + i,
+					      0xFC, vth << 2);
 	}
 }
 
@@ -4204,17 +4204,17 @@ static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
 
 	/* Insertion debounce set to 96ms */
 	snd_soc_component_write(comp, WCD9335_MBHC_PLUG_DETECT_CTL,
-			WCD9335_MBHC_DBNC_TIMER_INSREM_DBNC_T_96_MS |
-			WCD9335_MBHC_HSDET_PULLUP_CTL_1_2P0_UA);
+				WCD9335_MBHC_DBNC_TIMER_INSREM_DBNC_T_96_MS |
+				WCD9335_MBHC_HSDET_PULLUP_CTL_1_2P0_UA);
 	/* Button Debounce set to 16ms */
 	snd_soc_component_update_bits(comp, WCD9335_MBHC_CTL_1,
-			WCD9335_MBHC_BTN_DBNC_MASK,
-			WCD9335_MBHC_BTN_DBNC_T_16_MS);
+				      WCD9335_MBHC_BTN_DBNC_MASK,
+				      WCD9335_MBHC_BTN_DBNC_T_16_MS);
 
 	/* enable bias distribution control */
 	snd_soc_component_update_bits(comp, WCD9335_ANA_MBHC_ELECT,
-				WCD9335_ANA_MBHC_BIAS_EN_MASK,
-				WCD9335_ANA_MBHC_BIAS_EN);
+				      WCD9335_ANA_MBHC_BIAS_EN_MASK,
+				      WCD9335_ANA_MBHC_BIAS_EN);
 
 	snd_soc_component_update_bits(comp, WCD9335_ANA_MBHC_ELECT,
 				WCD9335_ANA_MBHC_BD_ISRC_CTL_MASK,
@@ -4222,8 +4222,8 @@ static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
 
 	/* enable MBHC clock */
 	snd_soc_component_update_bits(comp, WCD9335_MBHC_CTL_1,
-			WCD9335_MBHC_CTL_RCO_EN_MASK,
-			WCD9335_MBHC_CTL_RCO_EN);
+				      WCD9335_MBHC_CTL_RCO_EN_MASK,
+				      WCD9335_MBHC_CTL_RCO_EN);
 
 	snd_soc_component_update_bits(comp, WCD9335_MBHC_CTL_2,
 			WCD9335_MBHC_HS_VREF_CTL_MASK,
@@ -4233,7 +4233,7 @@ static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
 	wcd9335_program_btn_threshold(wcd);
 	/* Start FSM */
 	snd_soc_component_update_bits(comp, WCD9335_ANA_MBHC_ELECT,
-			BIT(7), BIT(7));
+				      BIT(7), BIT(7));
 
 	wcd->mbhc_btn0_released = false;
 	wcd->detect_accessory_type = true;
@@ -5116,8 +5116,8 @@ static int wcd9335_enable_efuse_sensing(struct snd_soc_component *comp)
 	 * parts (EFUSE_STATUS stays 0), which then breaks SLIMbus data ports.
 	 */
 	snd_soc_component_update_bits(comp,
-				WCD9335_CHIP_TIER_CTRL_EFUSE_CTL,
-				WCD9335_CHIP_TIER_CTRL_EFUSE_SSTATE_MASK, 0x20);
+				      WCD9335_CHIP_TIER_CTRL_EFUSE_CTL,
+				      WCD9335_CHIP_TIER_CTRL_EFUSE_SSTATE_MASK, 0x20);
 	snd_soc_component_update_bits(comp,
 				WCD9335_CHIP_TIER_CTRL_EFUSE_CTL,
 				WCD9335_CHIP_TIER_CTRL_EFUSE_EN_MASK,
@@ -5157,7 +5157,7 @@ static void wcd9335_codec_init(struct snd_soc_component *component)
 	 * mis-handles the master clock (garbled/silent SLIMbus playback).
 	 */
 	regmap_update_bits(wcd->regmap, WCD9335_CODEC_RPM_CLK_MCLK_CFG,
-				BIT(2), BIT(2));
+			   BIT(2), BIT(2));
 
 	for (i = 0; i < ARRAY_SIZE(wcd9335_codec_reg_init); i++)
 		snd_soc_component_update_bits(component,
