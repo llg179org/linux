@@ -4033,9 +4033,9 @@ static irqreturn_t wcd9335_mbhc_sw_irq(int irq, void *data)
 			btndet_curr_src = WCD9335_ANA_MBHC_BD_ISRC_100UA;
 
 		snd_soc_component_update_bits(component,
-					WCD9335_ANA_MBHC_ELECT,
-					WCD9335_ANA_MBHC_BD_ISRC_CTL_MASK,
-					btndet_curr_src);
+					      WCD9335_ANA_MBHC_ELECT,
+					      WCD9335_ANA_MBHC_BD_ISRC_CTL_MASK,
+					      btndet_curr_src);
 
 		/*
 		 * if only a btn0 press event is receive just before
@@ -4188,8 +4188,8 @@ static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
 	INIT_DELAYED_WORK(&wcd->mbhc_btn_work, wcd9335_mbhc_btn_work);
 
 	snd_soc_component_update_bits(comp, WCD9335_MBHC_PLUG_DETECT_CTL,
-			WCD9335_MBHC_HSDET_PULLUP_CTL_MASK,
-			WCD9335_MBHC_HSDET_PULLUP_CTL_1_2P0_UA);
+				      WCD9335_MBHC_HSDET_PULLUP_CTL_MASK,
+				      WCD9335_MBHC_HSDET_PULLUP_CTL_1_2P0_UA);
 
 	if (wcd->hphl_jack_type_normally_open)
 		plug_type |= WCD9335_MBHC_HPHL_PLUG_TYPE_NO;
@@ -4198,10 +4198,10 @@ static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
 		plug_type |= WCD9335_MBHC_GND_PLUG_TYPE_NO;
 
 	snd_soc_component_write(comp, WCD9335_ANA_MBHC_MECH,
-			plug_type |
-			WCD9335_MBHC_L_DET_EN |
-			WCD9335_MBHC_HSL_PULLUP_COMP_EN |
-			WCD9335_MBHC_HPHL_100K_TO_GND_EN);
+				plug_type |
+				WCD9335_MBHC_L_DET_EN |
+				WCD9335_MBHC_HSL_PULLUP_COMP_EN |
+				WCD9335_MBHC_HPHL_100K_TO_GND_EN);
 
 	/* Insertion debounce set to 96ms */
 	snd_soc_component_write(comp, WCD9335_MBHC_PLUG_DETECT_CTL,
@@ -4218,8 +4218,8 @@ static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
 				      WCD9335_ANA_MBHC_BIAS_EN);
 
 	snd_soc_component_update_bits(comp, WCD9335_ANA_MBHC_ELECT,
-				WCD9335_ANA_MBHC_BD_ISRC_CTL_MASK,
-				WCD9335_ANA_MBHC_BD_ISRC_100UA);
+				      WCD9335_ANA_MBHC_BD_ISRC_CTL_MASK,
+				      WCD9335_ANA_MBHC_BD_ISRC_100UA);
 
 	/* enable MBHC clock */
 	snd_soc_component_update_bits(comp, WCD9335_MBHC_CTL_1,
@@ -4227,8 +4227,8 @@ static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
 				      WCD9335_MBHC_CTL_RCO_EN);
 
 	snd_soc_component_update_bits(comp, WCD9335_MBHC_CTL_2,
-			WCD9335_MBHC_HS_VREF_CTL_MASK,
-			WCD9335_MBHC_HS_VREF_1P5_V);
+				      WCD9335_MBHC_HS_VREF_CTL_MASK,
+				      WCD9335_MBHC_HS_VREF_1P5_V);
 
 	/* program HS_VREF value */
 	wcd9335_program_btn_threshold(wcd);
