@@ -719,17 +719,17 @@
 	};
 
 	cooling-maps {
-		charger-warm {
+		map-charger-warm {
 			trip = <&pmi632_charger_warm>;
 			cooling-device = <&pmi632_charger 1 1>;
 		};
 
-		charger-hot {
+		map-charger-hot {
 			trip = <&pmi632_charger_hot>;
 			cooling-device = <&pmi632_charger 2 2>;
 		};
 
-		charger-very-hot {
+		map-charger-very-hot {
 			trip = <&pmi632_charger_very_hot>;
 			cooling-device = <&pmi632_charger 3 3>;
 		};
