@@ -1,9 +1,8 @@
 # Fairphone 3 (sdm632) mainline port — what is still open
 
-This file lives on `wip/7.1.3/debug` and on its cherry-pick twin on
-`debug-int/7.1.3`. Those are the two branches that are **not** upstream-bound,
-which is why a project TODO can sit in the kernel tree at all: it must never
-appear in a `submit/7.1.3/*` series, and it is deliberately **not** on
+This file lives on `debug-int/7.1.3`, the one branch here that is **not**
+upstream-bound, which is why a project TODO can sit in the kernel tree at all: it
+must never appear in a `submit/7.1.3/*` series, and it is deliberately **not** on
 `integration/7.1.3`. Do not carry it onto any other branch.
 
 That split is the point of `debug-int/<base>`:
@@ -42,6 +41,7 @@ Hashes are deliberately absent except where a commit is being *cited* rather tha
 git for-each-ref --format='%(refname:short) %(objectname:short=12)' \
   'refs/remotes/fork/wip/7.1.3/*' 'refs/remotes/fork/submit/7.1.3/*' \
   'refs/remotes/fork/integration/7.1.3' 'refs/remotes/fork/debug-int/7.1.3'
+# note: there is no wip/<base>/debug - see "The `debug` layer" below
 ```
 
 ---
@@ -224,10 +224,18 @@ yet. Gaps, in
 
 One commit. Working on the device; see item 9 for why it is not sendable.
 
-## `wip/7.1.3/debug` — bring-up aids, never upstream-bound
+## The `debug` layer — bring-up aids, never upstream-bound
 
 Starting the watchdog at probe, and this file. Nothing here gets a `submit/`
-series, ever; its twin goes to `debug-int/7.1.3`, never to `integration/7.1.3`.
+series, ever, and it stays off `integration/7.1.3`.
+
+**It is the only category with no `wip` branch.** `wip/7.1.3/debug` was retired on
+2026-07-30 (kept as the tag `archive/wip-7.1.3-debug-final`) once the layer became
+reproducible without it: every other category needs a `wip` branch because it
+carries evolving work against a moving base, while this one is a fixed, additive
+change that replays anywhere. It now lives here plus in
+`fp3-pmaports/docs/debug/files/`, and those payloads are half of the storage
+rather than a copy — refresh them in the same commit that changes the layer.
 
 The watchdog commit is the one place in the tree where mixing `.dts` with `.c` is
 allowed, and it uses that licence: it adds an undocumented `qcom,start-at-probe`
@@ -244,12 +252,12 @@ experimental offshoot is exactly where an early hang is likely, and exactly wher
 nobody wants to walk to the phone. One command, from the target branch:
 
 ```sh
-git cherry-pick $(git merge-base HEAD wip/7.1.3/debug)..wip/7.1.3/debug
+git am ../fp3-pmaports/docs/debug/files/0001-watchdog-*.patch
 ```
 
-`merge-base` resolves to the base commit, so this replays whatever the debug
-branch currently holds without naming any hash, and it keeps working as the layer
-grows.
+The step-by-step — preconditions with defined failure actions, a by-hand
+reconstruction for when the patch stops applying, and verification in three
+places — is `fp3-pmaports/docs/debug/create_debug.md`.
 
 It applies clean everywhere because the board-side change is a **separate**
 `sdm632-fairphone-fp3-debug.dtsi` plus one `#include` among the other includes.
@@ -258,7 +266,9 @@ That is not cosmetic: every other category appends its nodes to the *end* of
 collided with whichever of them was present. Measured 2026-07-30: the appended
 form conflicted on `wip/7.1.3/audio` and on `integration/7.1.3` and applied clean
 on `camera` and `charger`; the split form applies clean on all five wip branches
-and on integration.
+and on integration. Verified again by rebuilding the layer from the stored
+payloads onto a fresh branch off `integration/7.1.3`: same tree object as
+`debug-int/7.1.3`, same blob for every file it touches.
 
 ---
 
