@@ -36,6 +36,78 @@
 		};
 	};
 
+	/*
+	 * Battery profile from the Fairphone downstream qg-batterydata.
+	 *
+	 * The FP3 ships two different 3000 mAh packs, told apart at runtime by
+	 * a battery-ID resistor: "Kayo" at 50 kOhm, rated 2.7 A, and "Fuji" at
+	 * 10 kOhm, rated 2.0 A. A simple-battery node cannot choose, so this
+	 * describes Fuji - the pack in the phone this was developed on, whose
+	 * ID resistor measures 10.0 kOhm here and whose downstream stack
+	 * reports batt-id 9843 and selects
+	 * qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632.
+	 *
+	 * That means the current below is the pack's full rating, not a
+	 * reduction of it. On a phone fitted with the other pack the charger
+	 * finds the mismatch through qcom,batt-id-ohm below and falls back to
+	 * its conservative default rather than charging a 50 kOhm cell to a
+	 * 10 kOhm cell's limits; describing both packs properly needs a
+	 * binding for more than one monitored-battery, which does not exist.
+	 */
+	fp3_battery: battery {
+		compatible = "simple-battery";
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4390000>;
+		charge-full-design-microamp-hours = <3000000>;
+		constant-charge-current-max-microamp = <2000000>;
+		constant-charge-voltage-max-microvolt = <4390000>;
+
+		/*
+		 * The ID resistor this pack presents, and how the charger is
+		 * allowed to charge it. Both are Fairphone's characterisation
+		 * of this cell, from qg-batterydata-Fuji-3000mah-Jan22th2019-
+		 * pmi632: 10 kOhm ID, hard limits at 0 and 55 degC, soft limits
+		 * at 15 and 45, and the jeita-fcc-ranges entries for the zones
+		 * outside the soft ones. The thresholds are the raw BAT_THERM
+		 * ADC codes the comparators take; verified against a phone
+		 * running the vendor stack, which programs the same four.
+		 *
+		 * The ID matters because the FP3 also ships a second 3000 mAh
+		 * pack ("Kayo", 50 kOhm) rated 2.7 A with its cool band at
+		 * 20 degC. Only one battery can be described here, so the
+		 * charger checks the resistor before applying any of it.
+		 */
+		qcom,batt-id-ohm = <10000>;
+		qcom,jeita-hard-thresholds = <0x5675 0x1987>;
+		qcom,jeita-soft-thresholds = <0x44ff 0x2204>;
+		qcom,jeita-soft-fcc-microamp = <600000 1000000>;
+
+		/*
+		 * Voltage-based fuel gauge: OCV->capacity lookup table.
+		 * Extracted from the downstream Fairphone qpnp-qg battery
+		 * profile (qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632,
+		 * pc-temp-v1-lut, 25 degC column). Values converted from the
+		 * downstream 100uV units to microvolts. This is the same OCV
+		 * characterisation the downstream QG gauge uses; the mainline
+		 * power-supply core interpolates capacity from it.
+		 */
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 = <4375600 100>, <4353300 98>, <4328800 96>, <4304800 94>,
+			<4281100 92>, <4257500 90>, <4234200 88>, <4211000 86>,
+			<4188100 84>, <4165400 82>, <4142900 80>, <4121200 78>,
+			<4100700 76>, <4080700 74>, <4060200 72>, <4039500 70>,
+			<4020600 68>, <4003800 66>, <3988000 64>, <3972500 62>,
+			<3957300 60>, <3941900 58>, <3926800 56>, <3910400 54>,
+			<3890000 52>, <3868700 50>, <3854500 48>, <3844500 46>,
+			<3836800 44>, <3830600 42>, <3825500 40>, <3821400 38>,
+			<3818200 36>, <3814800 34>, <3811300 32>, <3807600 30>,
+			<3803700 28>, <3799500 26>, <3793600 24>, <3784200 22>,
+			<3772700 20>, <3760900 18>, <3747700 16>, <3732200 14>,
+			<3717500 12>, <3707900 10>, <3705400 9>, <3703200 8>,
+			<3701500 7>, <3698400 6>, <3682100 5>, <3644100 4>,
+			<3591600 3>, <3520900 2>, <3415500 1>, <3000000 0>;
+	};
+
 	vreg_cam_af_2p85: regulator-cam-af-2p85 {
 		compatible = "regulator-fixed";
 		regulator-name = "cam_af_2p85";
@@ -280,6 +352,23 @@
 	};
 };
 
+&pmi632_charger {
+	monitored-battery = <&fp3_battery>;
+
+	/*
+	 * Which PMIC pull-up the bat_id channel switches in, so the charger can
+	 * turn the divider reading back into the pack's ID resistance. It
+	 * follows from the channel chosen in pmi632.dtsi, but nothing in the
+	 * ADC consumer interface exposes that, so the board states it.
+	 */
+	qcom,batt-id-pullup-ohm = <100000>;
+
+	/* Downstream's mitigation table, minus its repeated last entry. */
+	qcom,thermal-mitigation = <2000000 1500000 1000000 500000>;
+
+	status = "okay";
+};
+
 &pmi632_vbus {
 	regulator-min-microamp = <500000>;
 	regulator-max-microamp = <1000000>;
@@ -453,6 +542,55 @@
 		pm8953_l23: l23 {
 			regulator-min-microvolt = <975000>;
 			regulator-max-microvolt = <1225000>;
+		};
+	};
+};
+
+/*
+ * Throttle charging on the charger's own die temperature. Downstream calls
+ * this qcom,hw-die-temp-mitigation and drives it from a userspace thermal
+ * daemon; here the PMIC's temperature zone drives it directly.
+ *
+ * The trips are ours. The zone already ends at the PMI632's own alarms, which
+ * start at 95 degC, so these sit below that with room to act: measured on this
+ * board the die idles at 37 degC, and the three steps taper the charge current
+ * before the hardware has to.
+ */
+&{/thermal-zones/pmi632-thermal} {
+	trips {
+		pmi632_charger_warm: charger-warm {
+			temperature = <70000>;
+			hysteresis = <2000>;
+			type = "passive";
+		};
+
+		pmi632_charger_hot: charger-hot {
+			temperature = <80000>;
+			hysteresis = <2000>;
+			type = "passive";
+		};
+
+		pmi632_charger_very_hot: charger-very-hot {
+			temperature = <90000>;
+			hysteresis = <2000>;
+			type = "passive";
+		};
+	};
+
+	cooling-maps {
+		map-charger-warm {
+			trip = <&pmi632_charger_warm>;
+			cooling-device = <&pmi632_charger 1 1>;
+		};
+
+		map-charger-hot {
+			trip = <&pmi632_charger_hot>;
+			cooling-device = <&pmi632_charger 2 2>;
+		};
+
+		map-charger-very-hot {
+			trip = <&pmi632_charger_very_hot>;
+			cooling-device = <&pmi632_charger 3 3>;
 		};
 	};
 };
