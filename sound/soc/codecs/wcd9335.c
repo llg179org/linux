@@ -336,7 +336,7 @@ struct wcd9335_codec {
 	struct delayed_work mbhc_btn_work;
 	int mbhc_btn_pending;
 	bool mbhc_btn_reported;
-	/* Voltage threshold for each of the headset buttons, in mV */
+	/* Voltage threshold for each of the headset buttons, in microvolts */
 	u32 vref_btn[WCD9335_MBHC_MAX_BUTTONS];
 
 	enum wcd9335_sido_voltage sido_voltage;
@@ -4172,7 +4172,8 @@ static void wcd9335_program_btn_threshold(struct wcd9335_codec *wcd)
 	int i, vth;
 
 	for (i = 0; i < WCD9335_MBHC_MAX_BUTTONS; i++) {
-		vth = ((wcd->vref_btn[i] * 2) / 25) & 0x3F;
+		/* The BTNx threshold field is the voltage in 12.5 mV steps. */
+		vth = (wcd->vref_btn[i] / 12500) & 0x3F;
 		snd_soc_component_update_bits(wcd->component,
 					      WCD9335_ANA_MBHC_BTN0 + i,
 					      0xFC, vth << 2);
@@ -5285,7 +5286,8 @@ static void wcd9335_parse_mbhc_data(struct device *dev,
 				      "qcom,gnd-jack-type-normally-open");
 
 	wcd->mbhc_btn_enabled = true;
-	rval = of_property_read_u32_array(dev->of_node, "qcom,mbhc-vthreshold",
+	rval = of_property_read_u32_array(dev->of_node,
+					  "qcom,mbhc-buttons-vthreshold-microvolt",
 					  &wcd->vref_btn[0],
 					  WCD9335_MBHC_MAX_BUTTONS);
 	if (rval < 0) {
