@@ -107,18 +107,6 @@ properties:
     minItems: 8
     maxItems: 8
 
-  qcom,hphl-jack-type-normally-open:
-    type: boolean
-    description:
-      True if the HPHL pin on the jack is NO (Normally Open), false if it's
-      NC (Normally Closed).
-
-  qcom,gnd-jack-type-normally-open:
-    type: boolean
-    description:
-      True if the GND pin on the jack is NO (Normally Open), false if it's
-      NC (Normally Closed).
-
 required:
   - compatible
   - reg
@@ -168,8 +156,6 @@ allOf:
         qcom,micbias4-microvolt: false
         qcom,dmic-sample-rate: false
         qcom,mbhc-buttons-vthreshold-microvolt: false
-        qcom,hphl-jack-type-normally-open: false
-        qcom,gnd-jack-type-normally-open: false
 
 additionalProperties: false
 
