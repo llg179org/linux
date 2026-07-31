@@ -43,6 +43,20 @@ enum wcd_mbhc_adc_mux_ctl {
 	MUX_CTL_NONE,
 };
 
+/*
+ * The parts of plug detection that depend on how the codec measures the
+ * jack. Codecs with an MBHC ADC read a voltage; the older ones only have
+ * comparators and have to walk the plug type down by toggling current
+ * sources. Everything else - the mechanical interrupt, the buttons, the
+ * jack reporting, impedance - is common and stays direct.
+ */
+struct wcd_mbhc_fn {
+	irqreturn_t (*hs_ins_irq)(int irq, void *data);
+	irqreturn_t (*hs_rem_irq)(int irq, void *data);
+	void (*detect_plug_type)(struct wcd_mbhc *mbhc);
+	void (*correct_plug_swch)(struct work_struct *work);
+};
+
 struct wcd_mbhc {
 	struct device *dev;
 	struct snd_soc_component *component;
@@ -51,6 +65,7 @@ struct wcd_mbhc {
 	const struct wcd_mbhc_cb *mbhc_cb;
 	const struct wcd_mbhc_intr *intr_ids;
 	const struct wcd_mbhc_field *fields;
+	const struct wcd_mbhc_fn *mbhc_fn;
 	/* Delayed work to report long button press */
 	struct delayed_work mbhc_btn_dwork;
 	/* Work to handle plug report */
@@ -78,6 +93,8 @@ struct wcd_mbhc {
 	/* Holds mbhc detection method - ADC/Legacy */
 	int mbhc_detection_logic;
 };
+
+static const struct wcd_mbhc_fn wcd_mbhc_adc_fn;
 
 static inline int wcd_mbhc_write_field(const struct wcd_mbhc *mbhc,
 				       int field, int val)
@@ -357,7 +374,6 @@ static void wcd_mbhc_report_plug_insertion(struct wcd_mbhc *mbhc,
 		break;
 	}
 
-
 	is_pa_on = wcd_mbhc_read_field(mbhc, WCD_MBHC_HPH_PA_EN);
 
 	if (!is_pa_on) {
@@ -538,7 +554,7 @@ static void mbhc_plug_detect_fn(struct work_struct *work)
 		/* Make sure MASTER_BIAS_CTL is enabled */
 		mbhc->mbhc_cb->mbhc_bias(component, true);
 		mbhc->is_btn_press = false;
-		wcd_mbhc_adc_detect_plug_type(mbhc);
+		mbhc->mbhc_fn->detect_plug_type(mbhc);
 	} else {
 		/* Disable HW FSM */
 		wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 0);
@@ -1406,6 +1422,13 @@ static irqreturn_t wcd_mbhc_adc_hs_ins_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static const struct wcd_mbhc_fn wcd_mbhc_adc_fn = {
+	.hs_ins_irq		= wcd_mbhc_adc_hs_ins_irq,
+	.hs_rem_irq		= wcd_mbhc_adc_hs_rem_irq,
+	.detect_plug_type	= wcd_mbhc_adc_detect_plug_type,
+	.correct_plug_swch	= wcd_correct_swch_plug,
+};
+
 int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,	uint32_t *zr)
 {
 	*zl = mbhc->zl;
@@ -1525,6 +1548,7 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 	mbhc->mbhc_cb = mbhc_cb;
 	mbhc->fields = fields;
 	mbhc->mbhc_detection_logic = WCD_DETECTION_ADC;
+	mbhc->mbhc_fn = &wcd_mbhc_adc_fn;
 
 	if (mbhc_cb->compute_impedance)
 		mbhc->impedance_detect = impedance_det_en;
@@ -1533,7 +1557,7 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 
 	mutex_init(&mbhc->lock);
 
-	INIT_WORK(&mbhc->correct_plug_swch, wcd_correct_swch_plug);
+	INIT_WORK(&mbhc->correct_plug_swch, mbhc->mbhc_fn->correct_plug_swch);
 	INIT_WORK(&mbhc->mbhc_plug_detect_work, mbhc_plug_detect_fn);
 
 	ret = request_threaded_irq(mbhc->intr_ids->mbhc_sw_intr, NULL,
@@ -1558,7 +1582,7 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 		goto err_free_btn_press_intr;
 
 	ret = request_threaded_irq(mbhc->intr_ids->mbhc_hs_ins_intr, NULL,
-					wcd_mbhc_adc_hs_ins_irq,
+					mbhc->mbhc_fn->hs_ins_irq,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"Elect Insert", mbhc);
 	if (ret)
@@ -1567,7 +1591,7 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 	disable_irq_nosync(mbhc->intr_ids->mbhc_hs_ins_intr);
 
 	ret = request_threaded_irq(mbhc->intr_ids->mbhc_hs_rem_intr, NULL,
-					wcd_mbhc_adc_hs_rem_irq,
+					mbhc->mbhc_fn->hs_rem_irq,
 					IRQF_ONESHOT | IRQF_TRIGGER_RISING,
 					"Elect Remove", mbhc);
 	if (ret)
