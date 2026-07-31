@@ -280,6 +280,7 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 		      const struct wcd_mbhc_cb *mbhc_cb,
 		      const struct wcd_mbhc_intr *mbhc_cdc_intr_ids,
 		      const struct wcd_mbhc_field *fields,
+		      enum wcd_mbhc_detect_logic detect_logic,
 		      bool impedance_det_en);
 int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,
 			   uint32_t *zr);
@@ -301,6 +302,7 @@ static inline struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component
 		      const struct wcd_mbhc_cb *mbhc_cb,
 		      const struct wcd_mbhc_intr *mbhc_cdc_intr_ids,
 		      const struct wcd_mbhc_field *fields,
+		      enum wcd_mbhc_detect_logic detect_logic,
 		      bool impedance_det_en)
 {
 	return ERR_PTR(-ENOTSUPP);
