@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/sony,imx363.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Sony IMX363 12 Mpixel CMOS Digital Image Sensor
+
+maintainers:
+  - Lajosházi, László Gergely <lajoshazilg@gmail.com>
+
+description:
+  IMX363 is a diagonal 7.06 mm (Type 1/2.55) 12 Mpixel CMOS active pixel type
+  stacked image sensor with a square pixel array of 4032 x 3024. It is
+  programmable through an I2C interface, and sends image data over MIPI CSI-2
+  on two or four lanes.
+
+$ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: sony,imx363
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    description: Input clock (INCK), 6 to 27 MHz.
+    maxItems: 1
+
+  clock-frequency:
+    description:
+      Frequency the sensor is told to run its input clock at. The driver
+      applies it with clk_set_rate(), so it must match what the clock provider
+      can produce.
+
+  reset-gpios:
+    description:
+      Reference to the GPIO connected to the XCLR pin, if any.
+    maxItems: 1
+
+  vana-supply:
+    description: Analog voltage (VANA) supply, 2.8 V
+
+  vdig-supply:
+    description: Digital core voltage (VDIG) supply, 1.2 V
+
+  vif-supply:
+    description: Interface voltage (VIF) supply, 1.8 V
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          data-lanes:
+            description:
+              The sensor runs in a two-lane or a four-lane mode, chosen from
+              the number of entries here. The lane numbering itself is not
+              significant to this device.
+            oneOf:
+              - minItems: 2
+                maxItems: 2
+              - minItems: 4
+                maxItems: 4
+
+          link-frequencies: true
+
+        required:
+          - data-lanes
+          - link-frequencies
+
+    required:
+      - endpoint
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - vana-supply
+  - vdig-supply
+  - vif-supply
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@1a {
+            compatible = "sony,imx363";
+            reg = <0x1a>;
+
+            clocks = <&camera_clk>;
+            clock-frequency = <24000000>;
+
+            reset-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+
+            vana-supply = <&vreg_cam_analog_2p8>;
+            vdig-supply = <&vreg_cam_core_1p2>;
+            vif-supply = <&vreg_cam_io_1p8>;
+
+            orientation = <1>;
+            rotation = <270>;
+
+            port {
+                endpoint {
+                    remote-endpoint = <&csiphy0_ep>;
+                    data-lanes = <0 1 2 3>;
+                    link-frequencies = /bits/ 64 <636000000 321000000>;
+                };
+            };
+        };
+    };
