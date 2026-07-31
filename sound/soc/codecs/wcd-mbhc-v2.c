@@ -1813,9 +1813,14 @@ exit:
 	if (plug_type == MBHC_PLUG_TYPE_HEADPHONE)
 		wcd_micbias_disable(mbhc);
 
-	if (plug_type == MBHC_PLUG_TYPE_HEADPHONE ||
-	    plug_type == MBHC_PLUG_TYPE_HEADSET)
-		enable_irq(mbhc->intr_ids->mbhc_hs_rem_intr);
+	/*
+	 * The electrical removal interrupt is deliberately left masked. It is
+	 * only needed to notice the far end of an extension cable moving, and
+	 * enabling it here cannot be balanced: the branch that would mask it
+	 * again returns early while no plug has been reported, so a detection
+	 * that ends without a report leaves the count one enable ahead.
+	 * Removal is detected mechanically in either case.
+	 */
 
 	if (mbhc->mbhc_cb->hph_pull_down_ctrl)
 		mbhc->mbhc_cb->hph_pull_down_ctrl(component, true);
