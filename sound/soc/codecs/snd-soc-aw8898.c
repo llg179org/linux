@@ -327,27 +327,41 @@ static int aw8898_mute(struct snd_soc_dai *dai, int mute, int stream)
 	return 0;
 }
 
-static int aw8898_startup(struct snd_pcm_substream *substream,
-               struct snd_soc_dai *dai)
+static int aw8898_prepare(struct snd_pcm_substream *substream,
+			  struct snd_soc_dai *dai)
 {
 	struct aw8898 *aw8898 = snd_soc_component_get_drvdata(dai->component);
 	unsigned int val;
 	int err;
 
+	/*
+	 * The amplifier is an I2S consumer, so its PLL can only lock once the
+	 * provider drives the bit clock. Waiting for that in .startup cannot
+	 * work when the clock is owned by a DSP that starts it as part of
+	 * bringing the port up: .startup runs before hw_params, the clock is
+	 * therefore still idle, the poll times out after a second, and the old
+	 * error path powered the chip down and failed the stream - so nothing
+	 * ever reached the speaker, and the amplifier was left in power-down
+	 * where every later register access returns -EIO.
+	 *
+	 * .prepare runs after the port is configured, which is the earliest
+	 * point the clock can be expected. A miss here is reported and left
+	 * alone: the codec is a consumer, so a late clock still locks the PLL
+	 * on its own, and refusing the stream guarantees silence where the
+	 * hardware would merely have started slightly late.
+	 */
 	err = regmap_read_poll_timeout(aw8898->regmap, AW8898_SYSST,
 				       val, val & AW8898_SYSST_PLLS,
 				       2000, 1 * USEC_PER_SEC);
-	if (err) {
-		dev_err(&aw8898->client->dev, "iis signal check error: %d\n", err);
-		aw8898_set_power(aw8898, false);
-		return err;
-	}
+	if (err)
+		dev_warn(&aw8898->client->dev,
+			 "iis clock not detected (%d), playing anyway\n", err);
 
 	return 0;
 }
 
 static const struct snd_soc_dai_ops aw8898_dai_ops = {
-	.startup	= aw8898_startup,
+	.prepare	= aw8898_prepare,
 	.set_fmt	= aw8898_set_fmt,
 	.hw_params	= aw8898_hw_params,
 	.mute_stream	= aw8898_mute,
