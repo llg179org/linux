@@ -1012,7 +1012,9 @@ static int pm4125_mbhc_init(struct snd_soc_component *component)
 
 	intr_ids->hph_right_ocp = regmap_irq_get_virq(pm4125->irq_chip, PM4125_IRQ_HPHR_OCP_INT);
 
-	pm4125->wcd_mbhc = wcd_mbhc_init(component, &mbhc_cb, intr_ids, pm4125_mbhc_fields, false);
+	pm4125->wcd_mbhc = wcd_mbhc_init(component, &mbhc_cb, intr_ids,
+					 pm4125_mbhc_fields,
+					 WCD_DETECTION_ADC, false);
 	if (IS_ERR(pm4125->wcd_mbhc))
 		return PTR_ERR(pm4125->wcd_mbhc);
 

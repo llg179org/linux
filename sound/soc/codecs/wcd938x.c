@@ -2564,7 +2564,8 @@ static int wcd938x_mbhc_init(struct snd_soc_component *component)
 	intr_ids->hph_right_ocp = regmap_irq_get_virq(wcd938x->irq_chip,
 						     WCD938X_IRQ_HPHR_OCP_INT);
 
-	wcd938x->wcd_mbhc = wcd_mbhc_init(component, &mbhc_cb, intr_ids, wcd_mbhc_fields, true);
+	wcd938x->wcd_mbhc = wcd_mbhc_init(component, &mbhc_cb, intr_ids,
+					  wcd_mbhc_fields, WCD_DETECTION_ADC, true);
 	if (IS_ERR(wcd938x->wcd_mbhc))
 		return PTR_ERR(wcd938x->wcd_mbhc);
 
