@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
 
+#include <linux/completion.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -25,6 +26,8 @@
 #define WCD_MBHC_ADC_HPH_THRESHOLD_MV	75
 #define WCD_MBHC_ADC_MICBIAS_MV		1800
 #define WCD_MBHC_FAKE_INS_RETRY		4
+#define WCD_MBHC_BTN_PRESS_TIMEOUT_MS	50
+#define SPECIAL_HS_DETECT_TIME_MS	(2 * 1000)
 
 #define WCD_MBHC_JACK_MASK (SND_JACK_HEADSET | SND_JACK_LINEOUT | \
 			   SND_JACK_MECHANICAL)
@@ -66,6 +69,8 @@ struct wcd_mbhc {
 	const struct wcd_mbhc_intr *intr_ids;
 	const struct wcd_mbhc_field *fields;
 	const struct wcd_mbhc_fn *mbhc_fn;
+	/* Signalled by the button press interrupt, waited on by legacy detection */
+	struct completion btn_press_compl;
 	/* Delayed work to report long button press */
 	struct delayed_work mbhc_btn_dwork;
 	/* Work to handle plug report */
@@ -95,6 +100,7 @@ struct wcd_mbhc {
 };
 
 static const struct wcd_mbhc_fn wcd_mbhc_adc_fn;
+static const struct wcd_mbhc_fn wcd_mbhc_legacy_fn;
 
 static inline int wcd_mbhc_write_field(const struct wcd_mbhc *mbhc,
 				       int field, int val)
@@ -688,6 +694,8 @@ static irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 	struct wcd_mbhc *mbhc = data;
 	int mask;
 	unsigned long msec_val;
+
+	complete(&mbhc->btn_press_compl);
 
 	mutex_lock(&mbhc->lock);
 	wcd_cancel_btn_work(mbhc);
@@ -1429,6 +1437,482 @@ static const struct wcd_mbhc_fn wcd_mbhc_adc_fn = {
 	.correct_plug_swch	= wcd_correct_swch_plug,
 };
 
+/*
+ * Legacy (comparator) detection.
+ *
+ * Codecs without an MBHC ADC cannot read the microphone voltage, so they
+ * cannot name the plug type in one measurement. Instead the hardware FSM
+ * drives a current source into the jack and reports three comparator
+ * outputs - HS_COMP_RESULT, and the HPHL and MIC Schmitt triggers - and
+ * the driver narrows the plug type down by watching how those settle over
+ * a few seconds while re-toggling the FSM.
+ *
+ * Ported from the downstream implementation, see the commit message.
+ */
+
+static int wcd_mbhc_legacy_check_cross_conn(struct wcd_mbhc *mbhc)
+{
+	bool hphl_sch_res, hphr_sch_res;
+	u8 isrc;
+
+	if (wcd_mbhc_read_field(mbhc, WCD_MBHC_SWCH_LEVEL_REMOVE))
+		return -EINVAL;
+
+	/* A running headphone PA drives the same pins the check reads. */
+	if (wcd_mbhc_read_field(mbhc, WCD_MBHC_HPH_PA_EN))
+		return 0;
+
+	isrc = wcd_mbhc_read_field(mbhc, WCD_MBHC_ELECT_SCHMT_ISRC);
+
+	/*
+	 * Ground and mic are swapped when both the HPHL and the HPHR Schmitt
+	 * triggers read back low with the cross-connection current source on.
+	 */
+	wcd_mbhc_curr_micbias_control(mbhc, WCD_MBHC_EN_MB);
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_SCHMT_ISRC, 2);
+
+	hphl_sch_res = wcd_mbhc_read_field(mbhc, WCD_MBHC_HPHL_SCHMT_RESULT);
+	hphr_sch_res = wcd_mbhc_read_field(mbhc, WCD_MBHC_HPHR_SCHMT_RESULT);
+
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_SCHMT_ISRC, isrc);
+
+	return (!hphl_sch_res && !hphr_sch_res) ? 1 : 0;
+}
+
+/*
+ * A headset whose microphone sits above the normal threshold reads as a
+ * line-out until the bias is raised. Hold micbias 2 at the higher voltage
+ * and watch HS_COMP_RESULT for up to SPECIAL_HS_DETECT_TIME_MS.
+ */
+static bool wcd_mbhc_legacy_is_special_headset(struct wcd_mbhc *mbhc)
+{
+	struct snd_soc_component *component = mbhc->component;
+	int delay = 0;
+
+	if (!mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic)
+		return false;
+
+	if (mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic(component, MIC_BIAS_2, true))
+		return false;
+
+	wcd_mbhc_curr_micbias_control(mbhc, WCD_MBHC_EN_MB);
+
+	while (delay < SPECIAL_HS_DETECT_TIME_MS) {
+		if (mbhc->hs_detect_work_stop)
+			break;
+
+		delay += 50;
+		/* Let micbias settle, then let the FSM refresh the result. */
+		msleep(50);
+		if (mbhc->mbhc_cb->set_auto_zeroing)
+			mbhc->mbhc_cb->set_auto_zeroing(component, true);
+		msleep(50);
+
+		if (!wcd_mbhc_read_field(mbhc, WCD_MBHC_HS_COMP_RESULT)) {
+			if (mbhc->mbhc_cb->set_auto_zeroing)
+				mbhc->mbhc_cb->set_auto_zeroing(component, false);
+			return true;
+		}
+	}
+
+	if (mbhc->mbhc_cb->set_auto_zeroing)
+		mbhc->mbhc_cb->set_auto_zeroing(component, false);
+	if (mbhc->mbhc_cb->set_micbias_value)
+		mbhc->mbhc_cb->set_micbias_value(component);
+	mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic(component, MIC_BIAS_2, false);
+
+	return false;
+}
+
+/*
+ * Same question as wcd_mbhc_legacy_is_special_headset(), asked once rather
+ * than in a loop: does the comparator that reads high at 1.8 V read low at
+ * the raised bias? If it does, the microphone is simply a high-threshold
+ * one and the plug is a headset after all.
+ */
+static bool wcd_mbhc_legacy_check_for_spl_headset(struct wcd_mbhc *mbhc)
+{
+	struct snd_soc_component *component = mbhc->component;
+	bool hs_comp_1v8, hs_comp_2v7;
+
+	if (!mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic)
+		return false;
+
+	hs_comp_1v8 = wcd_mbhc_read_field(mbhc, WCD_MBHC_HS_COMP_RESULT);
+	if (!hs_comp_1v8)
+		return false;
+
+	mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic(component, MIC_BIAS_2, true);
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 0);
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 1);
+	usleep_range(10000, 10100);
+
+	hs_comp_2v7 = wcd_mbhc_read_field(mbhc, WCD_MBHC_HS_COMP_RESULT);
+	if (!hs_comp_2v7)
+		return true;
+
+	/* Not a special headset - put the bias back where it was. */
+	mbhc->mbhc_cb->mbhc_micb_ctrl_thr_mic(component, MIC_BIAS_2, false);
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 0);
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 1);
+	usleep_range(10000, 10100);
+
+	return false;
+}
+
+static void wcd_mbhc_legacy_update_fsm_source(struct wcd_mbhc *mbhc,
+					      enum wcd_mbhc_plug_type plug_type)
+{
+	bool micbias2 = false;
+
+	if (mbhc->mbhc_cb->micbias_enable_status)
+		micbias2 = mbhc->mbhc_cb->micbias_enable_status(mbhc->component,
+							       MIC_BIAS_2);
+
+	switch (plug_type) {
+	case MBHC_PLUG_TYPE_HEADPHONE:
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_BTN_ISRC_CTL, 3);
+		break;
+	case MBHC_PLUG_TYPE_HEADSET:
+		if (!mbhc->is_hs_recording && !micbias2)
+			wcd_mbhc_write_field(mbhc, WCD_MBHC_BTN_ISRC_CTL, 3);
+		break;
+	default:
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_BTN_ISRC_CTL, 0);
+		break;
+	}
+}
+
+static void wcd_mbhc_legacy_detect_plug_type(struct wcd_mbhc *mbhc)
+{
+	struct snd_soc_component *component = mbhc->component;
+
+	WARN_ON(!mutex_is_locked(&mbhc->lock));
+
+	if (mbhc->mbhc_cb->hph_pull_down_ctrl)
+		mbhc->mbhc_cb->hph_pull_down_ctrl(component, false);
+
+	if (mbhc->mbhc_cb->mbhc_micbias_control)
+		mbhc->mbhc_cb->mbhc_micbias_control(component, MIC_BIAS_2,
+						    MICB_ENABLE);
+	else
+		wcd_mbhc_curr_micbias_control(mbhc, WCD_MBHC_EN_MB);
+
+	reinit_completion(&mbhc->btn_press_compl);
+	wcd_schedule_hs_detect_plug(mbhc, &mbhc->correct_plug_swch);
+}
+
+static void wcd_mbhc_legacy_correct_swch_plug(struct work_struct *work)
+{
+	struct wcd_mbhc *mbhc = container_of(work, struct wcd_mbhc,
+					     correct_plug_swch);
+	struct snd_soc_component *component = mbhc->component;
+	enum wcd_mbhc_plug_type plug_type = MBHC_PLUG_TYPE_INVALID;
+	int pt_gnd_mic_swap_cnt = 0, no_gnd_mic_swap_cnt = 0;
+	bool spl_hs = false, spl_hs_reported = false;
+	bool hs_comp_res, hphl_sch, mic_sch;
+	bool wrk_complete = false;
+	unsigned long timeout;
+	int cross_conn, try = 0;
+	bool btn_press;
+	int ret;
+
+	ret = pm_runtime_get_sync(component->dev);
+	if (ret < 0 && ret != -EACCES) {
+		dev_err_ratelimited(component->dev,
+				    "pm_runtime_get_sync failed in %s, ret %d\n",
+				    __func__, ret);
+		pm_runtime_put_noidle(component->dev);
+		return;
+	}
+
+	wcd_mbhc_curr_micbias_control(mbhc, WCD_MBHC_EN_MB);
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 1);
+
+	/*
+	 * A button that is already down at insertion is what separates a
+	 * three-pole headphone from a four-pole headset: the microphone pin
+	 * of a headphone is shorted to ground, which the FSM reports as a
+	 * button press.
+	 */
+	btn_press = wait_for_completion_timeout(&mbhc->btn_press_compl,
+						msecs_to_jiffies(WCD_MBHC_BTN_PRESS_TIMEOUT_MS));
+
+	hs_comp_res = wcd_mbhc_read_field(mbhc, WCD_MBHC_HS_COMP_RESULT);
+
+	if (!btn_press) {
+		if (!wcd_mbhc_read_field(mbhc, WCD_MBHC_BTN_RESULT)) {
+			plug_type = hs_comp_res ? MBHC_PLUG_TYPE_HIGH_HPH
+						: MBHC_PLUG_TYPE_HEADSET;
+		}
+	} else if (!wcd_mbhc_read_field(mbhc, WCD_MBHC_BTN_RESULT) &&
+		   !hs_comp_res) {
+		plug_type = MBHC_PLUG_TYPE_HEADPHONE;
+	}
+
+	do {
+		cross_conn = wcd_mbhc_legacy_check_cross_conn(mbhc);
+		try++;
+	} while (try < mbhc->swap_thr);
+
+	if (cross_conn > 0) {
+		plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
+		dev_dbg(mbhc->dev, "cross connection found, plug type %d\n",
+			plug_type);
+		goto correct_plug_type;
+	}
+
+	if ((plug_type == MBHC_PLUG_TYPE_HEADSET ||
+	     plug_type == MBHC_PLUG_TYPE_HEADPHONE) &&
+	    !wcd_mbhc_read_field(mbhc, WCD_MBHC_SWCH_LEVEL_REMOVE)) {
+		if (mbhc->current_plug == MBHC_PLUG_TYPE_HIGH_HPH)
+			wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_DETECTION_TYPE, 0);
+		wcd_mbhc_find_plug_and_report(mbhc, plug_type);
+	}
+
+correct_plug_type:
+	timeout = jiffies + msecs_to_jiffies(HS_DETECT_PLUG_TIME_MS);
+
+	while (!time_after(jiffies, timeout)) {
+		if (mbhc->hs_detect_work_stop) {
+			wcd_micbias_disable(mbhc);
+			goto exit;
+		}
+
+		if (mbhc->is_btn_press) {
+			wcd_cancel_btn_work(mbhc);
+			mbhc->is_btn_press = false;
+		}
+
+		/* Re-run the FSM so the comparators are refreshed. */
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 0);
+		wcd_mbhc_write_field(mbhc, WCD_MBHC_FSM_EN, 1);
+		msleep(20);
+
+		if (mbhc->hs_detect_work_stop) {
+			wcd_micbias_disable(mbhc);
+			goto exit;
+		}
+
+		hs_comp_res = wcd_mbhc_read_field(mbhc, WCD_MBHC_HS_COMP_RESULT);
+		msleep(180);
+
+		if (hs_comp_res && !spl_hs) {
+			spl_hs = wcd_mbhc_legacy_check_for_spl_headset(mbhc);
+			if (spl_hs)
+				hs_comp_res = false;
+		}
+
+		if (!hs_comp_res && !wcd_mbhc_read_field(mbhc, WCD_MBHC_HPH_PA_EN)) {
+			cross_conn = wcd_mbhc_legacy_check_cross_conn(mbhc);
+			if (cross_conn < 0) {
+				continue;
+			} else if (cross_conn > 0) {
+				no_gnd_mic_swap_cnt = 0;
+				if (++pt_gnd_mic_swap_cnt < mbhc->swap_thr)
+					continue;
+				plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
+				if (pt_gnd_mic_swap_cnt > mbhc->swap_thr)
+					goto report;
+			} else {
+				pt_gnd_mic_swap_cnt = 0;
+				plug_type = MBHC_PLUG_TYPE_HEADSET;
+				if (++no_gnd_mic_swap_cnt < GND_MIC_SWAP_THRESHOLD &&
+				    !spl_hs)
+					continue;
+				no_gnd_mic_swap_cnt = 0;
+			}
+
+			if (pt_gnd_mic_swap_cnt == mbhc->swap_thr &&
+			    plug_type == MBHC_PLUG_TYPE_GND_MIC_SWAP) {
+				/* US_EU switch present - flip it and re-check. */
+				if (mbhc->cfg->swap_gnd_mic &&
+				    mbhc->cfg->swap_gnd_mic(component))
+					continue;
+			}
+		}
+
+		hphl_sch = wcd_mbhc_read_field(mbhc, WCD_MBHC_HPHL_SCHMT_RESULT);
+		mic_sch = wcd_mbhc_read_field(mbhc, WCD_MBHC_MIC_SCHMT_RESULT);
+
+		if (hs_comp_res && !hphl_sch && !mic_sch) {
+			/* Nothing pulls the pins down: an extension cable. */
+			plug_type = MBHC_PLUG_TYPE_HIGH_HPH;
+			wrk_complete = true;
+			continue;
+		}
+
+		wrk_complete = false;
+		if (plug_type == MBHC_PLUG_TYPE_GND_MIC_SWAP)
+			continue;
+
+		plug_type = MBHC_PLUG_TYPE_HEADSET;
+		if (spl_hs && !spl_hs_reported) {
+			spl_hs_reported = true;
+			wcd_mbhc_find_plug_and_report(mbhc, plug_type);
+			continue;
+		}
+		if (spl_hs_reported)
+			continue;
+
+		if (mbhc->current_plug != MBHC_PLUG_TYPE_HEADSET &&
+		    !wcd_mbhc_read_field(mbhc, WCD_MBHC_SWCH_LEVEL_REMOVE) &&
+		    !mbhc->is_btn_press)
+			goto report;
+	}
+
+	if (!wrk_complete && mbhc->is_btn_press) {
+		/*
+		 * The button never came back up, so it was not a button: a
+		 * headphone inserted slowly enough to look like one.
+		 */
+		wcd_cancel_btn_work(mbhc);
+		if (!mbhc->force_linein)
+			plug_type = MBHC_PLUG_TYPE_HEADPHONE;
+	}
+
+	if (!wrk_complete && plug_type == MBHC_PLUG_TYPE_HEADSET)
+		goto enable_supply;
+
+	if (plug_type == MBHC_PLUG_TYPE_HIGH_HPH &&
+	    wcd_mbhc_legacy_is_special_headset(mbhc))
+		plug_type = MBHC_PLUG_TYPE_HEADSET;
+
+report:
+	if (wcd_mbhc_read_field(mbhc, WCD_MBHC_SWCH_LEVEL_REMOVE))
+		goto exit;
+
+	if (plug_type == MBHC_PLUG_TYPE_GND_MIC_SWAP && mbhc->is_btn_press) {
+		wcd_cancel_btn_work(mbhc);
+		plug_type = MBHC_PLUG_TYPE_HEADPHONE;
+	}
+
+	/*
+	 * Every path through the loop above can end in a continue, so the
+	 * timeout can expire without the plug type ever being named. There is
+	 * nothing to report then, and reporting it anyway trips the WARN in
+	 * wcd_mbhc_find_plug_and_report().
+	 */
+	if (plug_type == MBHC_PLUG_TYPE_INVALID) {
+		dev_dbg(mbhc->dev, "plug type undetermined after %d ms\n",
+			HS_DETECT_PLUG_TIME_MS);
+		goto exit;
+	}
+
+	wcd_mbhc_find_plug_and_report(mbhc, plug_type);
+
+enable_supply:
+	wcd_mbhc_legacy_update_fsm_source(mbhc, plug_type);
+
+exit:
+	if (mbhc->mbhc_cb->mbhc_micbias_control)
+		mbhc->mbhc_cb->mbhc_micbias_control(component, MIC_BIAS_2,
+						    MICB_DISABLE);
+
+	if (plug_type == MBHC_PLUG_TYPE_HEADPHONE)
+		wcd_micbias_disable(mbhc);
+
+	/*
+	 * The electrical removal interrupt is deliberately left masked. It is
+	 * only needed to notice the far end of an extension cable moving, and
+	 * enabling it here cannot be balanced: the branch that would mask it
+	 * again returns early while no plug has been reported, so a detection
+	 * that ends without a report leaves the count one enable ahead.
+	 * Removal is detected mechanically in either case.
+	 */
+
+	if (mbhc->mbhc_cb->hph_pull_down_ctrl)
+		mbhc->mbhc_cb->hph_pull_down_ctrl(component, true);
+
+	pm_runtime_put_autosuspend(component->dev);
+}
+
+static irqreturn_t wcd_mbhc_legacy_hs_rem_irq(int irq, void *data)
+{
+	struct wcd_mbhc *mbhc = data;
+	bool hs_comp_res, hphl_sch, mic_sch;
+	unsigned long timeout;
+	bool removed = true;
+	int retry = 0;
+
+	mutex_lock(&mbhc->lock);
+
+	/*
+	 * The comparator glitches while the plug is still moving. Only a
+	 * reading that stays high for the whole window is a real removal.
+	 */
+	timeout = jiffies + msecs_to_jiffies(WCD_FAKE_REMOVAL_MIN_PERIOD_MS);
+	do {
+		retry++;
+		usleep_range(10000, 10100);
+		hs_comp_res = wcd_mbhc_read_field(mbhc, WCD_MBHC_HS_COMP_RESULT);
+		if (!hs_comp_res && retry > FAKE_REM_RETRY_ATTEMPTS) {
+			removed = false;
+			break;
+		}
+	} while (!time_after(jiffies, timeout));
+
+	if (wcd_mbhc_read_field(mbhc, WCD_MBHC_SWCH_LEVEL_REMOVE))
+		goto exit;
+
+	if (!removed)
+		goto exit;
+
+	hphl_sch = wcd_mbhc_read_field(mbhc, WCD_MBHC_HPHL_SCHMT_RESULT);
+	mic_sch = wcd_mbhc_read_field(mbhc, WCD_MBHC_MIC_SCHMT_RESULT);
+	hs_comp_res = wcd_mbhc_read_field(mbhc, WCD_MBHC_HS_COMP_RESULT);
+
+	/*
+	 * Anything short of all three still reading high means the socket no
+	 * longer holds what was reported. The downstream version also counts
+	 * the individual triggers in the other branch, but that arm is
+	 * unreachable: reaching it requires all three to be set.
+	 */
+	if (!(hphl_sch && mic_sch && hs_comp_res))
+		wcd_mbhc_elec_hs_report_unplug(mbhc);
+
+exit:
+	mutex_unlock(&mbhc->lock);
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t wcd_mbhc_legacy_hs_ins_irq(int irq, void *data)
+{
+	struct wcd_mbhc *mbhc = data;
+	bool hphl_sch, mic_sch;
+
+	mutex_lock(&mbhc->lock);
+
+	if (!wcd_mbhc_read_field(mbhc, WCD_MBHC_ELECT_DETECTION_TYPE))
+		goto exit;
+
+	/*
+	 * Both the HPHL and the MIC Schmitt trigger have to fire before the
+	 * plug type is worth determining; one on its own is the far end of
+	 * an extension cable moving.
+	 */
+	hphl_sch = wcd_mbhc_read_field(mbhc, WCD_MBHC_HPHL_SCHMT_RESULT);
+	mic_sch = wcd_mbhc_read_field(mbhc, WCD_MBHC_MIC_SCHMT_RESULT);
+	if (!hphl_sch || !mic_sch)
+		goto exit;
+
+	disable_irq_nosync(mbhc->intr_ids->mbhc_hs_ins_intr);
+	wcd_mbhc_write_field(mbhc, WCD_MBHC_ELECT_SCHMT_ISRC, 0);
+	mbhc->is_btn_press = false;
+	wcd_mbhc_legacy_detect_plug_type(mbhc);
+
+exit:
+	mutex_unlock(&mbhc->lock);
+	return IRQ_HANDLED;
+}
+
+static const struct wcd_mbhc_fn wcd_mbhc_legacy_fn = {
+	.hs_ins_irq		= wcd_mbhc_legacy_hs_ins_irq,
+	.hs_rem_irq		= wcd_mbhc_legacy_hs_rem_irq,
+	.detect_plug_type	= wcd_mbhc_legacy_detect_plug_type,
+	.correct_plug_swch	= wcd_mbhc_legacy_correct_swch_plug,
+};
+
 int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,	uint32_t *zr)
 {
 	*zl = mbhc->zl;
@@ -1548,11 +2032,13 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 	mbhc->mbhc_cb = mbhc_cb;
 	mbhc->fields = fields;
 	mbhc->mbhc_detection_logic = WCD_DETECTION_ADC;
-	mbhc->mbhc_fn = &wcd_mbhc_adc_fn;
+	mbhc->mbhc_fn = (mbhc->mbhc_detection_logic == WCD_DETECTION_ADC) ?
+			&wcd_mbhc_adc_fn : &wcd_mbhc_legacy_fn;
 
 	if (mbhc_cb->compute_impedance)
 		mbhc->impedance_detect = impedance_det_en;
 
+	init_completion(&mbhc->btn_press_compl);
 	INIT_DELAYED_WORK(&mbhc->mbhc_btn_dwork, wcd_btn_long_press_fn);
 
 	mutex_init(&mbhc->lock);
