@@ -773,35 +773,6 @@
 				qcom,dmic-sample-rate = <2400000>;
 
 				/*
-				 * Both jack switches are normally open on this
-				 * board. Qualcomm's own device tree for this
-				 * hardware class - an external tasha codec on
-				 * Quinary MI2S, which is exactly this phone -
-				 * carries "qcom,msm-mbhc-hphl-swh = <1>" and
-				 * "qcom,msm-mbhc-gnd-swh = <1>", against <0>
-				 * for the boards using the PMIC-internal codec.
-				 *
-				 * Leaving them out described the jack as normally
-				 * closed, which is what the boards with the
-				 * PMIC-internal codec use.
-				 *
-				 * Setting them is a correction to the hardware
-				 * description, not a fix for anything observed:
-				 * measured across eight physical insert/remove
-				 * cycles before and after, every MBHC status
-				 * register stands still either way - RESULT_3 at
-				 * 0x08, ANA_MECH unchanged - while the plug
-				 * clearly moves. Only the two plug-type bits in
-				 * ANA_MECH change (0x85 -> 0x9d), confirming the
-				 * properties reach the codec. Insert and remove
-				 * are still detected, because the electrical
-				 * transient of a plug moving in the socket
-				 * raises the interrupt either way.
-				 */
-				qcom,hphl-jack-type-normally-open;
-				qcom,gnd-jack-type-normally-open;
-
-				/*
 				 * Headset (MBHC) button thresholds - the common
 				 * Qualcomm reference values.
 				 */
