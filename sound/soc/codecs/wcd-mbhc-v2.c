@@ -2011,6 +2011,7 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 			       const struct wcd_mbhc_cb *mbhc_cb,
 			       const struct wcd_mbhc_intr *intr_ids,
 			       const struct wcd_mbhc_field *fields,
+			       enum wcd_mbhc_detect_logic detect_logic,
 			       bool impedance_det_en)
 {
 	struct device *dev = component->dev;
@@ -2031,9 +2032,9 @@ struct wcd_mbhc *wcd_mbhc_init(struct snd_soc_component *component,
 	mbhc->intr_ids = intr_ids;
 	mbhc->mbhc_cb = mbhc_cb;
 	mbhc->fields = fields;
-	mbhc->mbhc_detection_logic = WCD_DETECTION_ADC;
-	mbhc->mbhc_fn = (mbhc->mbhc_detection_logic == WCD_DETECTION_ADC) ?
-			&wcd_mbhc_adc_fn : &wcd_mbhc_legacy_fn;
+	mbhc->mbhc_detection_logic = detect_logic;
+	mbhc->mbhc_fn = (detect_logic == WCD_DETECTION_ADC) ? &wcd_mbhc_adc_fn
+							    : &wcd_mbhc_legacy_fn;
 
 	if (mbhc_cb->compute_impedance)
 		mbhc->impedance_detect = impedance_det_en;
