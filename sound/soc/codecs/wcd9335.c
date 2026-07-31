@@ -28,6 +28,7 @@
 #include <sound/info.h>
 #include "wcd9335.h"
 #include "wcd-clsh-v2.h"
+#include "wcd-mbhc-v2.h"
 
 #include <dt-bindings/sound/qcom,wcd9335.h>
 
@@ -98,12 +99,6 @@
 
 #define WCD9335_SLIM_TX_CH(p) \
 	{.port = p, .shift = p,}
-
-#define WCD9335_MBHC_MAX_BUTTONS	8
-
-static const int wcd9335_mbhc_btn_mask = SND_JACK_BTN_0 | SND_JACK_BTN_1 |
-	SND_JACK_BTN_2 | SND_JACK_BTN_3 | SND_JACK_BTN_4;
-static const int wcd9335_hs_jack_mask = SND_JACK_HEADPHONE | SND_JACK_HEADSET;
 
 /* vout step value */
 #define WCD9335_CALCULATE_VOUT_D(req_mv) (((req_mv - 650) * 10) / 25)
@@ -278,20 +273,6 @@ enum wcd_clock_type {
 	WCD_CLK_MCLK,
 };
 
-enum {
-	MIC_BIAS_1 = 1,
-	MIC_BIAS_2,
-	MIC_BIAS_3,
-	MIC_BIAS_4
-};
-
-enum {
-	MICB_PULLUP_ENABLE,
-	MICB_PULLUP_DISABLE,
-	MICB_ENABLE,
-	MICB_DISABLE,
-};
-
 struct wcd9335_slim_ch {
 	u32 ch_num;
 	u16 port;
@@ -323,21 +304,10 @@ struct wcd9335_codec {
 	u32 num_tx_port;
 
 	/* MBHC / headset jack detection */
-	struct snd_soc_jack *jack;
+	struct wcd_mbhc *wcd_mbhc;
+	struct wcd_mbhc_config mbhc_cfg;
+	struct wcd_mbhc_intr mbhc_intr_ids;
 	struct snd_soc_jack hs_jack;
-	bool jack_inserted;
-	bool hphl_jack_type_normally_open;
-	bool gnd_jack_type_normally_open;
-	bool mbhc_btn_enabled;
-	int mbhc_btn0_released;
-	bool detect_accessory_type;
-	int accessory_type;
-	/* button reports are deferred, see wcd9335_mbhc_btn_work() */
-	struct delayed_work mbhc_btn_work;
-	int mbhc_btn_pending;
-	bool mbhc_btn_reported;
-	/* Voltage threshold for each of the headset buttons, in microvolts */
-	u32 vref_btn[WCD9335_MBHC_MAX_BUTTONS];
 
 	enum wcd9335_sido_voltage sido_voltage;
 
@@ -3994,260 +3964,194 @@ static int wcd9335_codec_enable_ear_pa(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
-static void wcd9335_mbhc_btn_release(struct wcd9335_codec *wcd);
-
-static irqreturn_t wcd9335_mbhc_sw_irq(int irq, void *data)
-{
-	struct wcd9335_codec *wcd = data;
-	struct snd_soc_component *component = wcd->component;
-	bool ins;
-
-	/*
-	 * The L_DET block detects one direction at a time, selected by
-	 * MECH_DETECT_TYPE, and must be flipped after each edge or the opposite
-	 * transition never fires an IRQ. Reading that bit for the *direction*,
-	 * though, is unreliable here (as is RESULT_3, which stays 0 for the whole
-	 * active-detection window after the edge), so keep a software insert state
-	 * - seeded from the settled plug status at init - for the direction, and use
-	 * MECH_DETECT_TYPE purely to re-arm the next edge.
-	 */
-	wcd->jack_inserted = !wcd->jack_inserted;
-	ins = wcd->jack_inserted;
-
-	/* Re-arm L_DET for the opposite edge (detect removal once inserted). */
-	snd_soc_component_update_bits(component, WCD9335_ANA_MBHC_MECH,
-				      WCD9335_MBHC_MECH_DETECT_TYPE_MASK,
-				      ins << WCD9335_MBHC_MECH_DETECT_TYPE_SHIFT);
-
-	if (ins) { /* hs insertion */
-		u32 btndet_curr_src;
-
-		/*
-		 * If no micbias is enabled, then enable 100uA internal
-		 * current source for Button detection
-		 */
-		if (snd_soc_component_read(component, WCD9335_ANA_MICB2) &
-		    WCD9335_ANA_MICB2_ENABLE)
-			btndet_curr_src = WCD9335_ANA_MBHC_BD_ISRC_OFF;
-		else
-			btndet_curr_src = WCD9335_ANA_MBHC_BD_ISRC_100UA;
-
-		snd_soc_component_update_bits(component,
-					      WCD9335_ANA_MBHC_ELECT,
-					      WCD9335_ANA_MBHC_BD_ISRC_CTL_MASK,
-					      btndet_curr_src);
-
-		/*
-		 * if only a btn0 press event is receive just before
-		 * insert event then its a 3 pole headphone else if
-		 * both press and release event received then its
-		 * a headset.
-		 */
-		if (wcd->mbhc_btn0_released) {
-			snd_soc_jack_report(wcd->jack, SND_JACK_HEADSET,
-					    wcd9335_hs_jack_mask);
-			wcd->accessory_type = SND_JACK_HEADSET;
-		} else {
-			snd_soc_jack_report(wcd->jack, SND_JACK_HEADPHONE,
-					    wcd9335_hs_jack_mask);
-			wcd->accessory_type = SND_JACK_HEADPHONE;
-		}
-
-		wcd->detect_accessory_type = false;
-
-	} else { /* removal */
-		wcd9335_mbhc_btn_release(wcd);
-		snd_soc_jack_report(wcd->jack, 0, wcd9335_hs_jack_mask);
-		wcd->detect_accessory_type = true;
-		wcd->mbhc_btn0_released = false;
-	}
-
-	return IRQ_HANDLED;
-}
+/*
+ * Register and mask of every MBHC field this codec implements, taken from
+ * the downstream driver's wcd_mbhc_registers[] table for tasha (see the
+ * commit message). The fields it does not list are the ones the block does
+ * not have: everything ADC-related, the moisture detection and the
+ * headphone ground switches, which is why this codec uses the legacy
+ * detection logic.
+ *
+ * WCD_MBHC_HPH_CNP_WG_TIME is left out as well. The downstream table has
+ * it, but no user in this driver or in the shared code reads or writes it,
+ * and this register map does not name the register.
+ */
+static const struct wcd_mbhc_field wcd9335_mbhc_fields[WCD_MBHC_REG_FUNC_MAX] = {
+	WCD_MBHC_FIELD(WCD_MBHC_L_DET_EN, WCD9335_ANA_MBHC_MECH, 0x80),
+	WCD_MBHC_FIELD(WCD_MBHC_GND_DET_EN, WCD9335_ANA_MBHC_MECH, 0x40),
+	WCD_MBHC_FIELD(WCD_MBHC_MECH_DETECTION_TYPE, WCD9335_ANA_MBHC_MECH, 0x20),
+	WCD_MBHC_FIELD(WCD_MBHC_MIC_CLAMP_CTL, WCD9335_MBHC_PLUG_DETECT_CTL, 0x30),
+	WCD_MBHC_FIELD(WCD_MBHC_ELECT_DETECTION_TYPE, WCD9335_ANA_MBHC_ELECT, 0x08),
+	WCD_MBHC_FIELD(WCD_MBHC_HS_L_DET_PULL_UP_CTRL, WCD9335_MBHC_PLUG_DETECT_CTL, 0xc0),
+	WCD_MBHC_FIELD(WCD_MBHC_HS_L_DET_PULL_UP_COMP_CTRL, WCD9335_ANA_MBHC_MECH, 0x04),
+	WCD_MBHC_FIELD(WCD_MBHC_HPHL_PLUG_TYPE, WCD9335_ANA_MBHC_MECH, 0x10),
+	WCD_MBHC_FIELD(WCD_MBHC_GND_PLUG_TYPE, WCD9335_ANA_MBHC_MECH, 0x08),
+	WCD_MBHC_FIELD(WCD_MBHC_SW_HPH_LP_100K_TO_GND, WCD9335_ANA_MBHC_MECH, 0x01),
+	WCD_MBHC_FIELD(WCD_MBHC_ELECT_SCHMT_ISRC, WCD9335_ANA_MBHC_ELECT, 0x06),
+	WCD_MBHC_FIELD(WCD_MBHC_FSM_EN, WCD9335_ANA_MBHC_ELECT, 0x80),
+	WCD_MBHC_FIELD(WCD_MBHC_INSREM_DBNC, WCD9335_MBHC_PLUG_DETECT_CTL, 0x0f),
+	WCD_MBHC_FIELD(WCD_MBHC_BTN_DBNC, WCD9335_MBHC_CTL_1, 0x03),
+	WCD_MBHC_FIELD(WCD_MBHC_HS_VREF, WCD9335_MBHC_CTL_2, 0x03),
+	WCD_MBHC_FIELD(WCD_MBHC_HS_COMP_RESULT, WCD9335_ANA_MBHC_RESULT_3, 0x08),
+	WCD_MBHC_FIELD(WCD_MBHC_MIC_SCHMT_RESULT, WCD9335_ANA_MBHC_RESULT_3, 0x20),
+	WCD_MBHC_FIELD(WCD_MBHC_HPHL_SCHMT_RESULT, WCD9335_ANA_MBHC_RESULT_3, 0x80),
+	WCD_MBHC_FIELD(WCD_MBHC_HPHR_SCHMT_RESULT, WCD9335_ANA_MBHC_RESULT_3, 0x40),
+	WCD_MBHC_FIELD(WCD_MBHC_OCP_FSM_EN, WCD9335_HPH_OCP_CTL, 0x10),
+	WCD_MBHC_FIELD(WCD_MBHC_BTN_RESULT, WCD9335_ANA_MBHC_RESULT_3, 0x07),
+	WCD_MBHC_FIELD(WCD_MBHC_BTN_ISRC_CTL, WCD9335_ANA_MBHC_ELECT, 0x70),
+	WCD_MBHC_FIELD(WCD_MBHC_ELECT_RESULT, WCD9335_ANA_MBHC_RESULT_3, 0xff),
+	WCD_MBHC_FIELD(WCD_MBHC_MICB_CTRL, WCD9335_ANA_MICB2, 0xc0),
+	WCD_MBHC_FIELD(WCD_MBHC_HPHR_PA_EN, WCD9335_ANA_HPH, 0x40),
+	WCD_MBHC_FIELD(WCD_MBHC_HPHL_PA_EN, WCD9335_ANA_HPH, 0x80),
+	WCD_MBHC_FIELD(WCD_MBHC_HPH_PA_EN, WCD9335_ANA_HPH, 0xc0),
+	WCD_MBHC_FIELD(WCD_MBHC_SWCH_LEVEL_REMOVE, WCD9335_ANA_MBHC_RESULT_3, 0x10),
+};
 
 /*
- * Unplugging a headset trips the button comparator before the mechanical
- * detection notices that the jack is gone: measured on a Fairphone 3, the codec
- * reports a button press 84 ms before the removal and releases it 62 ms later.
- * Userspace sees a complete key tap - BTN_0 is a media key - and acts on it, so
- * a jack pulled out of the socket starts a music player. A real press lasts far
- * longer than the transient, so report one only once it is still there a moment
- * later, and drop it if the release or the removal arrives first.
+ * The shared code calls request_threaded_irq() on these directly, so they are
+ * Linux virqs and can only be filled in once the irq chip exists - not the
+ * regmap-irq indices they are resolved from.
  */
-#define WCD9335_MBHC_BTN_DEBOUNCE_MS	120
-
-static void wcd9335_mbhc_btn_work(struct work_struct *work)
+static int wcd9335_mbhc_map_irqs(struct wcd9335_codec *wcd)
 {
-	struct wcd9335_codec *wcd = container_of(work, struct wcd9335_codec,
-						 mbhc_btn_work.work);
+	static const struct {
+		size_t off;
+		int irq;
+	} map[] = {
+		{ offsetof(struct wcd_mbhc_intr, mbhc_sw_intr),
+		  WCD9335_IRQ_MBHC_SW_DET },
+		{ offsetof(struct wcd_mbhc_intr, mbhc_btn_press_intr),
+		  WCD9335_IRQ_MBHC_BUTTON_PRESS_DET },
+		{ offsetof(struct wcd_mbhc_intr, mbhc_btn_release_intr),
+		  WCD9335_IRQ_MBHC_BUTTON_RELEASE_DET },
+		{ offsetof(struct wcd_mbhc_intr, mbhc_hs_ins_intr),
+		  WCD9335_IRQ_MBHC_ELECT_INS_REM_LEG_DET },
+		{ offsetof(struct wcd_mbhc_intr, mbhc_hs_rem_intr),
+		  WCD9335_IRQ_MBHC_ELECT_INS_REM_DET },
+		{ offsetof(struct wcd_mbhc_intr, hph_left_ocp),
+		  WCD9335_IRQ_HPH_PA_OCPL_FAULT },
+		{ offsetof(struct wcd_mbhc_intr, hph_right_ocp),
+		  WCD9335_IRQ_HPH_PA_OCPR_FAULT },
+	};
+	int i, virq;
 
-	if (!wcd->jack_inserted || wcd->detect_accessory_type ||
-	    wcd->accessory_type == SND_JACK_HEADPHONE)
+	for (i = 0; i < ARRAY_SIZE(map); i++) {
+		virq = regmap_irq_get_virq(wcd->irq_data, map[i].irq);
+		if (virq < 0) {
+			dev_err(wcd->dev, "Failed to map MBHC irq %d\n",
+				map[i].irq);
+			return virq;
+		}
+		*(int *)((char *)&wcd->mbhc_intr_ids + map[i].off) = virq;
+	}
+
+	return 0;
+}
+
+static void wcd9335_mbhc_bias(struct snd_soc_component *component, bool enable)
+{
+	snd_soc_component_update_bits(component, WCD9335_ANA_MBHC_ELECT,
+				      WCD9335_ANA_MBHC_BIAS_EN_MASK,
+				      enable ? WCD9335_ANA_MBHC_BIAS_EN : 0);
+}
+
+static void wcd9335_mbhc_clk_setup(struct snd_soc_component *component,
+				   bool enable)
+{
+	snd_soc_component_update_bits(component, WCD9335_MBHC_CTL_1,
+				      WCD9335_MBHC_CTL_RCO_EN_MASK,
+				      enable ? WCD9335_MBHC_CTL_RCO_EN : 0);
+}
+
+static void wcd9335_mbhc_set_btn_thr(struct snd_soc_component *component,
+				     int *btn_low, int *btn_high,
+				     int num_btn, bool is_micbias)
+{
+	int i;
+
+	if (num_btn > WCD_MBHC_DEF_BUTTONS) {
+		dev_err(component->dev, "%d buttons exceed the maximum of %d\n",
+			num_btn, WCD_MBHC_DEF_BUTTONS);
 		return;
-
-	wcd->mbhc_btn_reported = true;
-	snd_soc_jack_report(wcd->jack, wcd->mbhc_btn_pending,
-			    wcd9335_mbhc_btn_mask);
-}
-
-static void wcd9335_mbhc_btn_release(struct wcd9335_codec *wcd)
-{
-	cancel_delayed_work(&wcd->mbhc_btn_work);
-	wcd->mbhc_btn_pending = 0;
-	if (wcd->mbhc_btn_reported) {
-		wcd->mbhc_btn_reported = false;
-		snd_soc_jack_report(wcd->jack, 0, wcd9335_mbhc_btn_mask);
-	}
-}
-
-static irqreturn_t wcd9335_mbhc_btn_press_irq(int irq, void *data)
-{
-	struct wcd9335_codec *wcd = data;
-	struct snd_soc_component *comp = wcd->component;
-	u32 btn_result, result;
-	int btn;
-
-	/* do not handle any button events for headset without buttons */
-	if (wcd->accessory_type == SND_JACK_HEADPHONE)
-		return IRQ_HANDLED;
-
-	result = snd_soc_component_read(comp, WCD9335_ANA_MBHC_RESULT_3);
-	btn_result = result & WCD9335_MBHC_BTN_RESULT_MASK;
-
-	switch (btn_result) {
-	case 0xf:
-	case 0x4:
-		btn = SND_JACK_BTN_4;
-		break;
-	case 0x3:
-		btn = SND_JACK_BTN_3;
-		break;
-	case 0x2:
-		btn = SND_JACK_BTN_2;
-		break;
-	case 0x1:
-		btn = SND_JACK_BTN_1;
-		break;
-	case 0x0:
-		/* handle BTN_0 specially for type detection */
-		if (wcd->detect_accessory_type)
-			return IRQ_HANDLED;
-		btn = SND_JACK_BTN_0;
-		break;
-	default:
-		dev_err(comp->dev,
-			"Unexpected button press result (%x)", btn_result);
-		return IRQ_HANDLED;
 	}
 
-	wcd->mbhc_btn_pending = btn;
-	mod_delayed_work(system_wq, &wcd->mbhc_btn_work,
-			 msecs_to_jiffies(WCD9335_MBHC_BTN_DEBOUNCE_MS));
-
-	return IRQ_HANDLED;
-}
-
-static irqreturn_t wcd9335_mbhc_bt_rel_irq(int irq, void *data)
-{
-	struct wcd9335_codec *wcd = data;
-
-	if (wcd->detect_accessory_type) {
-		u32 result = snd_soc_component_read(wcd->component,
-						    WCD9335_ANA_MBHC_RESULT_3);
-
-		/* check if its BTN0 thats released */
-		if (!(result & WCD9335_MBHC_BTN_RESULT_MASK))
-			wcd->mbhc_btn0_released = true;
-
-	} else {
-		if (wcd->accessory_type != SND_JACK_HEADPHONE)
-			wcd9335_mbhc_btn_release(wcd);
-	}
-
-	return IRQ_HANDLED;
-}
-
-static void wcd9335_program_btn_threshold(struct wcd9335_codec *wcd)
-{
-	int i, vth;
-
-	for (i = 0; i < WCD9335_MBHC_MAX_BUTTONS; i++) {
+	for (i = 0; i < num_btn; i++) {
 		/* The BTNx threshold field is the voltage in 12.5 mV steps. */
-		vth = (wcd->vref_btn[i] / 12500) & 0x3F;
-		snd_soc_component_update_bits(wcd->component,
+		int vth = ((btn_high[i] * 2) / 25) & 0x3f;
+
+		snd_soc_component_update_bits(component,
 					      WCD9335_ANA_MBHC_BTN0 + i,
-					      0xFC, vth << 2);
+					      0xfc, vth << 2);
 	}
 }
 
-static void wcd9335_mbhc_initialise(struct wcd9335_codec *wcd)
+static const struct wcd_mbhc_cb wcd9335_mbhc_cb = {
+	.mbhc_bias	= wcd9335_mbhc_bias,
+	.clk_setup	= wcd9335_mbhc_clk_setup,
+	.set_btn_thr	= wcd9335_mbhc_set_btn_thr,
+};
+
+static int wcd9335_mbhc_init(struct wcd9335_codec *wcd)
 {
-	struct snd_soc_component *comp = wcd->component;
-	u32 plug_type = 0;
+	struct snd_soc_component *component = wcd->component;
+	int ret;
 
-	INIT_DELAYED_WORK(&wcd->mbhc_btn_work, wcd9335_mbhc_btn_work);
-
-	snd_soc_component_update_bits(comp, WCD9335_MBHC_PLUG_DETECT_CTL,
+	/*
+	 * The mechanical detection block needs a stronger pull-up on this
+	 * board than the shared code's default, and the plug type bits have
+	 * to be settled before L_DET is armed. Both are register writes the
+	 * shared init makes as well; doing them first only fixes the order.
+	 */
+	snd_soc_component_update_bits(component, WCD9335_MBHC_PLUG_DETECT_CTL,
 				      WCD9335_MBHC_HSDET_PULLUP_CTL_MASK,
 				      WCD9335_MBHC_HSDET_PULLUP_CTL_1_2P0_UA);
 
-	if (wcd->hphl_jack_type_normally_open)
-		plug_type |= WCD9335_MBHC_HPHL_PLUG_TYPE_NO;
-
-	if (wcd->gnd_jack_type_normally_open)
-		plug_type |= WCD9335_MBHC_GND_PLUG_TYPE_NO;
-
-	snd_soc_component_write(comp, WCD9335_ANA_MBHC_MECH,
-				plug_type |
-				WCD9335_MBHC_L_DET_EN |
-				WCD9335_MBHC_HSL_PULLUP_COMP_EN |
-				WCD9335_MBHC_HPHL_100K_TO_GND_EN);
-
-	/* Insertion debounce set to 96ms */
-	snd_soc_component_write(comp, WCD9335_MBHC_PLUG_DETECT_CTL,
-				WCD9335_MBHC_DBNC_TIMER_INSREM_DBNC_T_96_MS |
-				WCD9335_MBHC_HSDET_PULLUP_CTL_1_2P0_UA);
-	/* Button Debounce set to 16ms */
-	snd_soc_component_update_bits(comp, WCD9335_MBHC_CTL_1,
-				      WCD9335_MBHC_BTN_DBNC_MASK,
-				      WCD9335_MBHC_BTN_DBNC_T_16_MS);
-
-	/* enable bias distribution control */
-	snd_soc_component_update_bits(comp, WCD9335_ANA_MBHC_ELECT,
-				      WCD9335_ANA_MBHC_BIAS_EN_MASK,
-				      WCD9335_ANA_MBHC_BIAS_EN);
-
-	snd_soc_component_update_bits(comp, WCD9335_ANA_MBHC_ELECT,
+	snd_soc_component_update_bits(component, WCD9335_ANA_MBHC_ELECT,
 				      WCD9335_ANA_MBHC_BD_ISRC_CTL_MASK,
 				      WCD9335_ANA_MBHC_BD_ISRC_100UA);
 
-	/* enable MBHC clock */
-	snd_soc_component_update_bits(comp, WCD9335_MBHC_CTL_1,
-				      WCD9335_MBHC_CTL_RCO_EN_MASK,
-				      WCD9335_MBHC_CTL_RCO_EN);
-
-	snd_soc_component_update_bits(comp, WCD9335_MBHC_CTL_2,
+	snd_soc_component_update_bits(component, WCD9335_MBHC_CTL_2,
 				      WCD9335_MBHC_HS_VREF_CTL_MASK,
 				      WCD9335_MBHC_HS_VREF_1P5_V);
 
-	/* program HS_VREF value */
-	wcd9335_program_btn_threshold(wcd);
-	/* Start FSM */
-	snd_soc_component_update_bits(comp, WCD9335_ANA_MBHC_ELECT,
-				      BIT(7), BIT(7));
+	ret = wcd9335_mbhc_map_irqs(wcd);
+	if (ret)
+		return ret;
 
-	wcd->mbhc_btn0_released = false;
-	wcd->detect_accessory_type = true;
+	wcd->wcd_mbhc = wcd_mbhc_init(component, &wcd9335_mbhc_cb,
+				      &wcd->mbhc_intr_ids,
+				      wcd9335_mbhc_fields,
+				      WCD_DETECTION_LEGACY, false);
+	if (IS_ERR(wcd->wcd_mbhc))
+		return PTR_ERR(wcd->wcd_mbhc);
 
-	/*
-	 * Seed the software insert state from the settled mechanical result now,
-	 * while no edge detection is in flight (RESULT_3 bit 3 set = unplugged).
-	 * The sw_irq only ever flips this, so getting the boot value right is what
-	 * keeps the direction correct.
-	 */
-	msleep(300);
-	wcd->jack_inserted =
-		!(snd_soc_component_read(comp, WCD9335_ANA_MBHC_RESULT_3) & BIT(3));
+	ret = snd_soc_card_jack_new(component->card, "Headset Jack",
+				    SND_JACK_HEADSET | SND_JACK_LINEOUT |
+				    SND_JACK_MECHANICAL |
+				    SND_JACK_BTN_0 | SND_JACK_BTN_1 |
+				    SND_JACK_BTN_2 | SND_JACK_BTN_3 |
+				    SND_JACK_BTN_4 | SND_JACK_BTN_5,
+				    &wcd->hs_jack);
+	if (ret) {
+		dev_err(component->dev, "Failed to create headset jack: %d\n", ret);
+		goto err_deinit;
+	}
+
+	snd_jack_set_key(wcd->hs_jack.jack, SND_JACK_BTN_0, KEY_MEDIA);
+	snd_jack_set_key(wcd->hs_jack.jack, SND_JACK_BTN_1, KEY_VOICECOMMAND);
+	snd_jack_set_key(wcd->hs_jack.jack, SND_JACK_BTN_2, KEY_VOLUMEUP);
+	snd_jack_set_key(wcd->hs_jack.jack, SND_JACK_BTN_3, KEY_VOLUMEDOWN);
+
+	ret = wcd_mbhc_start(wcd->wcd_mbhc, &wcd->mbhc_cfg, &wcd->hs_jack);
+	if (ret)
+		goto err_deinit;
+
+	return 0;
+
+err_deinit:
+	wcd_mbhc_deinit(wcd->wcd_mbhc);
+	wcd->wcd_mbhc = NULL;
+	return ret;
 }
 
 static irqreturn_t wcd9335_slimbus_irq(int irq, void *data)
@@ -4329,18 +4233,6 @@ static const struct wcd9335_irq wcd9335_irqs[] = {
 		.irq = WCD9335_IRQ_SLIMBUS,
 		.handler = wcd9335_slimbus_irq,
 		.name = "SLIM Slave",
-	}, {
-		.irq = WCD9335_IRQ_MBHC_SW_DET,
-		.handler = wcd9335_mbhc_sw_irq,
-		.name = "Headset Mech Insert Removal",
-	}, {
-		.irq = WCD9335_IRQ_MBHC_BUTTON_PRESS_DET,
-		.handler = wcd9335_mbhc_btn_press_irq,
-		.name = "Headset Button Press",
-	}, {
-		.irq = WCD9335_IRQ_MBHC_BUTTON_RELEASE_DET,
-		.handler = wcd9335_mbhc_bt_rel_irq,
-		.name = "Headset Button Release",
 	},
 };
 
@@ -5167,7 +5059,6 @@ static void wcd9335_codec_init(struct snd_soc_component *component)
 					wcd9335_codec_reg_init[i].val);
 
 	wcd9335_enable_efuse_sensing(component);
-	wcd9335_mbhc_initialise(wcd);
 }
 
 static int wcd9335_codec_probe(struct snd_soc_component *component)
@@ -5188,37 +5079,19 @@ static int wcd9335_codec_probe(struct snd_soc_component *component)
 
 	wcd9335_codec_init(component);
 
-	/*
-	 * Own the headset jack here. The generic qcom machine driver only hands its
-	 * jack to codecs on an MI2S link, so on this SLIMbus card the WCD9335 never
-	 * got one via .set_jack and every MBHC report went to a NULL jack. Creating
-	 * it from the codec, which is what actually does the detection, keeps it
-	 * self-contained.
-	 */
-	ret = snd_soc_card_jack_new(component->card, "Headset Jack",
-				    SND_JACK_HEADSET | SND_JACK_HEADPHONE |
-				    SND_JACK_BTN_0 | SND_JACK_BTN_1 |
-				    SND_JACK_BTN_2 | SND_JACK_BTN_3 |
-				    SND_JACK_BTN_4, &wcd->hs_jack);
-	if (ret) {
-		dev_err(component->dev, "Failed to create headset jack: %d\n", ret);
-		return ret;
-	}
-	snd_jack_set_key(wcd->hs_jack.jack, SND_JACK_BTN_0, KEY_MEDIA);
-	snd_jack_set_key(wcd->hs_jack.jack, SND_JACK_BTN_1, KEY_VOICECOMMAND);
-	snd_jack_set_key(wcd->hs_jack.jack, SND_JACK_BTN_2, KEY_VOLUMEUP);
-	snd_jack_set_key(wcd->hs_jack.jack, SND_JACK_BTN_3, KEY_VOLUMEDOWN);
-	wcd->jack = &wcd->hs_jack;
-
-	/* Reflect a headset already plugged in at boot (seeded in mbhc init). */
-	if (wcd->jack_inserted)
-		snd_soc_jack_report(wcd->jack, SND_JACK_HEADPHONE,
-				    wcd9335_hs_jack_mask);
-
 	for (i = 0; i < NUM_CODEC_DAIS; i++)
 		INIT_LIST_HEAD(&wcd->dai[i].slim_ch_list);
 
 	ret = wcd9335_setup_irqs(wcd);
+	if (ret)
+		goto free_clsh_ctrl;
+
+	/*
+	 * The jack is owned by the codec rather than the machine driver: the
+	 * generic qcom card only hands its jack to codecs on an MI2S link, so
+	 * on a SLIMbus card this one would never see .set_jack at all.
+	 */
+	ret = wcd9335_mbhc_init(wcd);
 	if (ret)
 		goto free_clsh_ctrl;
 
@@ -5233,9 +5106,12 @@ static void wcd9335_codec_remove(struct snd_soc_component *comp)
 {
 	struct wcd9335_codec *wcd = dev_get_drvdata(comp->dev);
 
+	if (wcd->wcd_mbhc) {
+		wcd_mbhc_stop(wcd->wcd_mbhc);
+		wcd_mbhc_deinit(wcd->wcd_mbhc);
+	}
 	wcd_clsh_ctrl_free(wcd->clsh_ctrl);
 	wcd9335_teardown_irqs(wcd);
-	cancel_delayed_work_sync(&wcd->mbhc_btn_work);
 }
 
 static int wcd9335_codec_set_sysclk(struct snd_soc_component *comp,
@@ -5273,28 +5149,6 @@ static const struct snd_soc_component_driver wcd9335_component_drv = {
 	.endianness = 1,
 };
 
-static void wcd9335_parse_mbhc_data(struct device *dev,
-				    struct wcd9335_codec *wcd)
-{
-	int rval;
-
-	wcd->hphl_jack_type_normally_open =
-		of_property_read_bool(dev->of_node,
-				      "qcom,hphl-jack-type-normally-open");
-	wcd->gnd_jack_type_normally_open =
-		of_property_read_bool(dev->of_node,
-				      "qcom,gnd-jack-type-normally-open");
-
-	wcd->mbhc_btn_enabled = true;
-	rval = of_property_read_u32_array(dev->of_node,
-					  "qcom,mbhc-buttons-vthreshold-microvolt",
-					  &wcd->vref_btn[0],
-					  WCD9335_MBHC_MAX_BUTTONS);
-	if (rval < 0) {
-		wcd->mbhc_btn_enabled = false;
-		dev_dbg(dev, "MBHC button detection disabled\n");
-	}
-}
 
 static int wcd9335_probe(struct wcd9335_codec *wcd)
 {
@@ -5303,7 +5157,15 @@ static int wcd9335_probe(struct wcd9335_codec *wcd)
 	memcpy(wcd->rx_chs, wcd9335_rx_chs, sizeof(wcd9335_rx_chs));
 	memcpy(wcd->tx_chs, wcd9335_tx_chs, sizeof(wcd9335_tx_chs));
 
-	wcd9335_parse_mbhc_data(dev, wcd);
+	/*
+	 * Legacy detection never compares a measured voltage, so the
+	 * thresholds the ADC path needs are not set here; only the button
+	 * count and the micbias the MBHC block uses.
+	 */
+	wcd->mbhc_cfg.num_btn = WCD_MBHC_DEF_BUTTONS;
+	wcd->mbhc_cfg.mbhc_micbias = MIC_BIAS_2;
+	wcd->mbhc_cfg.anc_micbias = MIC_BIAS_2;
+	wcd_dt_parse_mbhc_data(dev, &wcd->mbhc_cfg);
 
 	wcd->sido_voltage = SIDO_VOLTAGE_NOMINAL_MV;
 
