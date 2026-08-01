@@ -939,6 +939,14 @@ config VIDEO_DW9807_VCM
 	  capability. This is designed for linear control of
 	  voice coil motors, controlled via I2C serial interface.
 
+config VIDEO_LC898217
+	tristate "LC898217 lens voice coil support"
+	help
+	  This is a driver for the LC898217 camera lens voice coil.
+	  LC898217 is a 10 bit DAC designed for linear control of
+	  voice coil motors, controlled via I2C serial interface.
+	  It exposes the lens position as V4L2_CID_FOCUS_ABSOLUTE.
+
 endif
 
 menu "Flash devices"
