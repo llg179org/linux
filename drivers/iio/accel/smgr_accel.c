@@ -88,12 +88,22 @@ static const struct iio_info smgr_accel_iio_info = {
 	.read_avail = smgr_accel_read_avail,
 };
 
-/* TODO: Get mount matrix from SSC or read it from the device tree */
+/*
+ * Sensor frame to device frame, as IIO defines it: x to the right, y to the
+ * top and z out of the screen, so a phone lying face up reads +g on z.
+ *
+ * The value this replaces came from an msm8996 board and was not a rotation
+ * at all - its determinant is -1, which makes it a reflection - so it could
+ * not have been right for any device.
+ *
+ * TODO: this belongs in the device tree, since it describes the board rather
+ * than the Sensor Manager.
+ */
 static const struct iio_mount_matrix qcom_ssc_mount_matrix = {
 	.rotation = {
-		"0", "-1", "0",
-		"-1", "0", "0",
-		"0", "0", "1"
+		"0", "1", "0",
+		"1", "0", "0",
+		"0", "0", "-1"
 	}
 };
 
