@@ -48,6 +48,8 @@ properties:
   vif-supply:
     description: Interface voltage (VIF) supply, 1.8 V
 
+  lens-focus: true
+
   port:
     $ref: /schemas/graph.yaml#/$defs/port-base
     additionalProperties: false
