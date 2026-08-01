@@ -116,6 +116,8 @@
 		vdig-supply = <&pm8953_l2>;	/* 1.2V digital core */
 		vif-supply = <&vreg_cam_io_1p8>;	/* 1.8V IO */
 
+		lens-focus = <&cam_lens>;
+
 		port {
 			imx363_ep: endpoint {
 				data-lanes = <0 1 2 3>;
@@ -133,7 +135,7 @@
 		read-only;
 	};
 
-	camera-lens@72 {
+	cam_lens: camera-lens@72 {
 		compatible = "onnn,lc898217xc";
 		reg = <0x72>;
 
