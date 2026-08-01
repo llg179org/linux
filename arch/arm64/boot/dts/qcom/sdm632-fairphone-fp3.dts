@@ -222,6 +222,8 @@
 		vdig-supply = <&pm8953_l2>;	/* 1.2V digital core */
 		vif-supply = <&vreg_cam_io_1p8>;	/* 1.8V IO */
 
+		lens-focus = <&camera_lens>;
+
 		port {
 			imx363_ep: endpoint {
 				data-lanes = <0 1 2 3>;
@@ -240,12 +242,21 @@
 	};
 
 	/*
-	 * The focus actuator is at 0x0c, not at 0x72 where an LC898217 would
-	 * be: a forced scan of this bus with both the actuator and the sensor
-	 * rails powered acknowledges 0x0c, 0x1a and 0x50 and nothing at 0x72.
-	 * Which part sits there is not settled yet, so it is left undescribed
-	 * rather than described wrongly.
+	 * Fairphone ships this phone with two different rear camera modules,
+	 * and they do not carry the same focus actuator: the vendor camera
+	 * configuration pairs the original module with an LC898217XC at 0x72
+	 * and both second-source modules with an AK7374 at 0x0c. A forced scan
+	 * of this bus, with the actuator and the sensor rails powered,
+	 * acknowledges 0x0c, 0x1a and 0x50 and nothing at 0x72, so the module
+	 * fitted here is a second-source one.
 	 */
+	camera_lens: camera-lens@c {
+		compatible = "asahi-kasei,ak7374";
+		reg = <0x0c>;
+
+		vdd-supply = <&vreg_cam_af_2p85>;
+		vio-supply = <&vreg_cam_io_1p8>;
+	};
 };
 
 &cci_i2c1 {
