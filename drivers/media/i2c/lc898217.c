@@ -32,6 +32,14 @@
 #define LC898217_ENABLE_DELAY_US	10000
 
 /*
+ * The first transfer after the actuator is powered can time out on the bus,
+ * so the enable write is retried rather than taken as final on its first
+ * failure.
+ */
+#define LC898217_ENABLE_TRIES		5
+#define LC898217_RETRY_DELAY_US		5000
+
+/*
  * V4L2 defines a larger V4L2_CID_FOCUS_ABSOLUTE as a closer focus, while a
  * larger DAC code on this actuator drives the lens the other way, so the
  * control value is mirrored on its way to the hardware.
@@ -191,6 +199,7 @@ static int lc898217_runtime_resume(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct lc898217 *lc898217 = sd_to_lc898217(sd);
+	unsigned int tries;
 	int ret;
 
 	ret = regulator_enable(lc898217->vcc);
@@ -199,15 +208,26 @@ static int lc898217_runtime_resume(struct device *dev)
 
 	usleep_range(LC898217_POWER_DELAY_US, LC898217_POWER_DELAY_US + 500);
 
-	ret = lc898217_write(lc898217, LC898217_REG_ENABLE, LC898217_ENABLE, 1);
-	if (ret)
+	for (tries = 0; tries < LC898217_ENABLE_TRIES; tries++) {
+		ret = lc898217_write(lc898217, LC898217_REG_ENABLE,
+				     LC898217_ENABLE, 1);
+		if (!ret)
+			break;
+		usleep_range(LC898217_RETRY_DELAY_US,
+			     LC898217_RETRY_DELAY_US + 500);
+	}
+	if (ret) {
+		dev_err(dev, "failed to enable the actuator: %d\n", ret);
 		goto err_disable_vcc;
+	}
 
 	usleep_range(LC898217_ENABLE_DELAY_US, LC898217_ENABLE_DELAY_US + 500);
 
 	ret = lc898217_set_position(lc898217, lc898217->focus->val);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "failed to set the lens position: %d\n", ret);
 		goto err_disable_vcc;
+	}
 
 	return 0;
 
