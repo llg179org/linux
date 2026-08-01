@@ -222,8 +222,6 @@
 		vdig-supply = <&pm8953_l2>;	/* 1.2V digital core */
 		vif-supply = <&vreg_cam_io_1p8>;	/* 1.8V IO */
 
-		lens-focus = <&cam_lens>;
-
 		port {
 			imx363_ep: endpoint {
 				data-lanes = <0 1 2 3>;
@@ -241,12 +239,13 @@
 		read-only;
 	};
 
-	cam_lens: camera-lens@72 {
-		compatible = "onnn,lc898217xc";
-		reg = <0x72>;
-
-		vcc-supply = <&vreg_cam_af_2p85>;
-	};
+	/*
+	 * The focus actuator is at 0x0c, not at 0x72 where an LC898217 would
+	 * be: a forced scan of this bus with both the actuator and the sensor
+	 * rails powered acknowledges 0x0c, 0x1a and 0x50 and nothing at 0x72.
+	 * Which part sits there is not settled yet, so it is left undescribed
+	 * rather than described wrongly.
+	 */
 };
 
 &cci_i2c1 {
