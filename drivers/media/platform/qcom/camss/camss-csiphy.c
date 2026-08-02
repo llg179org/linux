@@ -133,8 +133,16 @@ static u8 csiphy_get_bpp(const struct csiphy_format_info *formats,
 /*
  * csiphy_set_clock_rates - Calculate and set clock rates on CSIPHY module
  * @csiphy: CSIPHY device
+ * @step: how many entries above the lowest usable rate to pick
+ *
+ * @step is zero for the first attempt, which selects the lowest rate in the
+ * table that clears the link frequency. Each retry raises it by one, so a
+ * timer rate whose branch will not come out of reset can be stepped over.
+ *
+ * Return 0 on success, -ERANGE when @step walks off the end of the table, or
+ * a negative error code otherwise.
  */
-static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
+static int csiphy_set_clock_rates(struct csiphy_device *csiphy, unsigned int step)
 {
 	struct device *dev = csiphy->camss->dev;
 	s64 link_freq;
@@ -173,6 +181,15 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 			if (min_rate == 0)
 				j = clock->nfreqs - 1;
 
+			if (step) {
+				if (j + step >= clock->nfreqs)
+					return -ERANGE;
+				j += step;
+				dev_info(dev,
+					 "%s: retrying at %u Hz (step %u)\n",
+					 clock->name, clock->freq[j], step);
+			}
+
 			round_rate = clk_round_rate(clock->clk, clock->freq[j]);
 			if (round_rate < 0) {
 				dev_err(dev, "clk round rate failed: %ld\n",
@@ -193,6 +210,47 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 	return 0;
 }
 
+/* FP3 debug only: GCC registers behind the msm8953 CSIPHY0 timer clock. */
+#define CSIPHY_DBG_GCC_CSI0PHYTIMER	0x0184e000
+#define CSIPHY_DBG_CMD_RCGR		0x00
+#define CSIPHY_DBG_CFG_RCGR		0x04
+#define CSIPHY_DBG_CBCR			0x1c
+
+/*
+ * csiphy_debug_dump_timer_clk - report why the timer branch refused to start
+ * @csiphy: CSIPHY device
+ *
+ * Separates the three explanations the -EBUSY from clk_branch2_enable() cannot
+ * tell apart: the root is off (the RCG never committed its source), the branch
+ * is gated on its own, or the branch is enabled and its CLK_OFF status simply
+ * never clears. Reads only, and only on the SoC whose address map this is.
+ */
+static void csiphy_debug_dump_timer_clk(struct csiphy_device *csiphy)
+{
+	struct device *dev = csiphy->camss->dev;
+	void __iomem *gcc;
+	u32 cmd, cfg, cbcr;
+
+	if (csiphy->camss->res->version != CAMSS_8x53 || csiphy->id != 0)
+		return;
+
+	gcc = ioremap(CSIPHY_DBG_GCC_CSI0PHYTIMER, 0x20);
+	if (!gcc)
+		return;
+
+	cmd = readl_relaxed(gcc + CSIPHY_DBG_CMD_RCGR);
+	cfg = readl_relaxed(gcc + CSIPHY_DBG_CFG_RCGR);
+	cbcr = readl_relaxed(gcc + CSIPHY_DBG_CBCR);
+	iounmap(gcc);
+
+	dev_info(dev,
+		 "csi0phytimer %u Hz: CMD_RCGR %#010x [ROOT_OFF %u UPDATE %u] CFG %#010x [src %u div %u] CBCR %#010x [CLK_OFF %u ENABLE %u]\n",
+		 csiphy->timer_clk_rate,
+		 cmd, !!(cmd & BIT(31)), !!(cmd & BIT(0)),
+		 cfg, (cfg >> 8) & 0x7, cfg & 0x1f,
+		 cbcr, !!(cbcr & BIT(31)), !!(cbcr & BIT(0)));
+}
+
 /*
  * csiphy_set_power - Power on/off CSIPHY module
  * @sd: CSIPHY V4L2 subdevice
@@ -206,6 +264,7 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 	struct device *dev = csiphy->camss->dev;
 
 	if (on) {
+		unsigned int step;
 		int ret;
 
 		ret = pm_runtime_resume_and_get(dev);
@@ -219,15 +278,19 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 			return ret;
 		}
 
-		ret = csiphy_set_clock_rates(csiphy);
-		if (ret < 0) {
-			regulator_bulk_disable(csiphy->num_supplies,
-					       csiphy->supplies);
-			pm_runtime_put_sync(dev);
-			return ret;
+		for (step = 0; ; step++) {
+			ret = csiphy_set_clock_rates(csiphy, step);
+			if (ret < 0)
+				break;
+
+			ret = camss_enable_clocks(csiphy->nclocks,
+						  csiphy->clock, dev);
+			if (!ret)
+				break;
+
+			csiphy_debug_dump_timer_clk(csiphy);
 		}
 
-		ret = camss_enable_clocks(csiphy->nclocks, csiphy->clock, dev);
 		if (ret < 0) {
 			regulator_bulk_disable(csiphy->num_supplies,
 					       csiphy->supplies);
