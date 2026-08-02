@@ -277,6 +277,45 @@ static void csiphy_debug_dump_timer_clk(struct csiphy_device *csiphy)
 }
 
 /*
+ * csiphy_debug_open_gpll0_outputs - open every output gate GPLL0 has
+ *
+ * The experiment behind the retry: if the divided output the failing rate is
+ * derived from is simply gated off, opening the gate should make the original
+ * rate work, and the fix belongs in the clock driver rather than here.
+ * Returns true if a gate that was closed is now open.
+ */
+static bool csiphy_debug_open_gpll0_outputs(struct csiphy_device *csiphy)
+{
+	void __iomem *gcc;
+	u32 user_ctl;
+	bool changed;
+
+	if (csiphy->camss->res->version != CAMSS_8x53 || csiphy->id != 0)
+		return false;
+
+	gcc = ioremap(CSIPHY_DBG_GCC_GPLL0, 0x30);
+	if (!gcc)
+		return false;
+
+	user_ctl = readl_relaxed(gcc + CSIPHY_DBG_PLL_USER_CTL);
+	changed = (user_ctl & 0x7) != 0x7;
+	if (changed) {
+		writel_relaxed(user_ctl | 0x7, gcc + CSIPHY_DBG_PLL_USER_CTL);
+		/* Post the write and give the newly opened output a moment. */
+		readl_relaxed(gcc + CSIPHY_DBG_PLL_USER_CTL);
+		udelay(10);
+	}
+	iounmap(gcc);
+
+	if (changed)
+		dev_info(csiphy->camss->dev,
+			 "gpll0: USER_CTL out %#x -> 0x7, retrying the same rate\n",
+			 user_ctl & 0x7);
+
+	return changed;
+}
+
+/*
  * csiphy_set_power - Power on/off CSIPHY module
  * @sd: CSIPHY V4L2 subdevice
  * @on: Requested power state
@@ -313,7 +352,25 @@ static int csiphy_set_power(struct v4l2_subdev *sd, int on)
 			if (!ret)
 				break;
 
-			csiphy_debug_dump_timer_clk(csiphy);
+			/*
+			 * First failure: dump, then open GPLL0's output gates
+			 * and try the same rate once more. If that works the
+			 * rate was never the problem.
+			 */
+			if (step == 0) {
+				csiphy_debug_dump_timer_clk(csiphy);
+
+				if (csiphy_debug_open_gpll0_outputs(csiphy)) {
+					ret = camss_enable_clocks(csiphy->nclocks,
+								  csiphy->clock,
+								  dev);
+					if (!ret) {
+						dev_info(dev,
+							 "csi0phytimer: the same rate works once GPLL0's outputs are open\n");
+						break;
+					}
+				}
+			}
 		}
 
 		if (ret < 0) {
