@@ -154,7 +154,31 @@
 };
 
 &cci_i2c1 {
-	/* Samsung S5K4H7YX (front) @ 0x10 — TODO: needs s5k4h7 driver */
+	/*
+	 * The front sensor is described but not yet wired into CAMSS: the
+	 * driver identifies the part and registers no subdevice, and an
+	 * endpoint whose subdevice never binds would stall the CAMSS async
+	 * notifier and take the rear camera down with it. The port belongs
+	 * here once this sensor can stream.
+	 */
+	camera@10 {
+		compatible = "samsung,s5k4h7";
+		reg = <0x10>;
+
+		/* Front (user-facing) sensor, mounted rotated 270 degrees. */
+		orientation = <0>;
+		rotation = <270>;
+
+		reset-gpios = <&tlmm 129 GPIO_ACTIVE_LOW>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		vdda-supply = <&pm8953_l22>;		/* 2.8V analog */
+		vddio-supply = <&vreg_cam_io_1p8>;	/* 1.8V IO */
+		vddd-supply = <&vreg_cam2_dig_1p2>;	/* 1.2V digital core */
+	};
 };
 
 &camss {
