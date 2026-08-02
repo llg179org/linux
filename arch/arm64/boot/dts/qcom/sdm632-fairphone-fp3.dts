@@ -195,7 +195,8 @@
 
 &cci {
 	pinctrl-names = "default";
-	pinctrl-0 = <&cci0_default>, <&camss_mclk0_default>;
+	pinctrl-0 = <&cci0_default>, <&camss_mclk0_default>,
+		    <&cci1_default>, <&camss_mclk1_default>;
 
 	status = "okay";
 };
