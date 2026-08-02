@@ -215,6 +215,11 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy, unsigned int ste
 #define CSIPHY_DBG_CMD_RCGR		0x00
 #define CSIPHY_DBG_CFG_RCGR		0x04
 #define CSIPHY_DBG_CBCR			0x1c
+/* ... and GPLL0, whose divided-by-two output feeds the rate that fails. */
+#define CSIPHY_DBG_GCC_GPLL0		0x01821000
+#define CSIPHY_DBG_PLL_MODE		0x00
+#define CSIPHY_DBG_PLL_USER_CTL		0x10
+#define CSIPHY_DBG_PLL_STATUS		0x24
 
 /*
  * csiphy_debug_dump_timer_clk - report why the timer branch refused to start
@@ -249,6 +254,26 @@ static void csiphy_debug_dump_timer_clk(struct csiphy_device *csiphy)
 		 cmd, !!(cmd & BIT(31)), !!(cmd & BIT(0)),
 		 cfg, (cfg >> 8) & 0x7, cfg & 0x1f,
 		 cbcr, !!(cbcr & BIT(31)), !!(cbcr & BIT(0)));
+
+	gcc = ioremap(CSIPHY_DBG_GCC_GPLL0, 0x30);
+	if (!gcc)
+		return;
+
+	cmd = readl_relaxed(gcc + CSIPHY_DBG_PLL_MODE);
+	cfg = readl_relaxed(gcc + CSIPHY_DBG_PLL_USER_CTL);
+	cbcr = readl_relaxed(gcc + CSIPHY_DBG_PLL_STATUS);
+	iounmap(gcc);
+
+	/*
+	 * USER_CTL bits 0..2 gate this PLL's outputs. The divided output is
+	 * modelled in the clock driver as a plain fixed factor with no
+	 * register behind it, so if its gate is closed here nothing in the
+	 * kernel will ever open it, and every rate derived from it is dead.
+	 */
+	dev_info(dev,
+		 "gpll0: MODE %#010x [lock %u outctrl %u] USER_CTL %#010x [out %#x post_div %u] STATUS %#010x\n",
+		 cmd, !!(cmd & BIT(31)), !!(cmd & BIT(0)),
+		 cfg, cfg & 0x7, (cfg >> 8) & 0xf, cbcr);
 }
 
 /*
