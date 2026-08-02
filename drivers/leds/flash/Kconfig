@@ -83,8 +83,8 @@ config LEDS_QCOM_FLASH
 	select REGMAP
 	help
 	  This option enables support for the flash module found in Qualcomm
-	  Technologies, Inc. PMICs. The flash module can have 3 or 4 flash LED
-	  channels and each channel is programmable to support up to 1.5 A full
+	  Technologies, Inc. PMICs. The flash module can have 2, 3 or 4 flash
+	  LED channels and each channel is programmable to support up to 1.5 A full
 	  scale current. It also supports connecting two channels' output together
 	  to supply one LED component to achieve current up to 2 A. In such case,
 	  the total LED current will be split symmetrically on each channel and
