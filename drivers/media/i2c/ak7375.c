@@ -10,6 +10,9 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 
+/* How many times to reissue the first transfer of a resume before failing. */
+#define AK7375_ACTIVE_RETRIES	5
+
 struct ak73xx_chipdef {
 	u8 reg_position;
 	u8 reg_cont;
@@ -305,7 +308,7 @@ static int __maybe_unused ak7375_vcm_resume(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ak7375_device *ak7375_dev = sd_to_ak7375_vcm(sd);
 	const struct ak73xx_chipdef *cdef = ak7375_dev->cdef;
-	int ret, val;
+	int ret, val, i;
 
 	if (ak7375_dev->active)
 		return 0;
@@ -318,8 +321,23 @@ static int __maybe_unused ak7375_vcm_resume(struct device *dev)
 	/* Wait for vcm to become ready */
 	usleep_range(cdef->power_delay_us, cdef->power_delay_us + 500);
 
-	ret = ak7375_i2c_write(ak7375_dev, cdef->reg_cont,
-			       cdef->mode_active, 1);
+	/*
+	 * Where the I2C master is shared with the image sensor, the first
+	 * transfer after the supplies come up can time out: another client
+	 * tearing the camera down while this one resumes leaves the bus busy
+	 * for a few milliseconds. Failing here costs far more than the cause
+	 * warrants - runtime PM records the error, every later resume returns
+	 * -EINVAL, and the lens is gone for the rest of the boot, with
+	 * userspace reporting only that autofocus is unavailable - so give the
+	 * bus a few chances before giving up on it.
+	 */
+	for (i = 0; i < AK7375_ACTIVE_RETRIES; i++) {
+		ret = ak7375_i2c_write(ak7375_dev, cdef->reg_cont,
+				       cdef->mode_active, 1);
+		if (!ret)
+			break;
+		usleep_range(1000, 1500);
+	}
 	if (ret) {
 		dev_err(dev, "%s I2C failure: %d\n", __func__, ret);
 		regulator_bulk_disable(ARRAY_SIZE(ak7375_supply_names),
