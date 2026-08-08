@@ -64,6 +64,19 @@
 		constant-charge-voltage-max-microvolt = <4390000>;
 
 		/*
+		 * What a loaded terminal voltage has to be corrected by to
+		 * recover an open-circuit one. This is what the PMIC's own
+		 * gauge measures on this phone: it reports 118 to 126 mOhm
+		 * while the vendor stack runs it. The pack profile's nominal
+		 * figure is higher, around 166 mOhm, and the two bracket what
+		 * a single number can say about a quantity that moves with
+		 * temperature and state of charge. It is only ever applied to
+		 * samples taken at a current low enough that the difference
+		 * between the two ends of that bracket is a few millivolts.
+		 */
+		factory-internal-resistance-micro-ohms = <120000>;
+
+		/*
 		 * The ID resistor this pack presents, and how the charger is
 		 * allowed to charge it. Both are Fairphone's characterisation
 		 * of this cell, from qg-batterydata-Fuji-3000mah-Jan22th2019-
