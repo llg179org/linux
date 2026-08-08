@@ -11,6 +11,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/math.h>
 
 #include "camss.h"
 #include "camss-vfe.h"
@@ -325,6 +326,54 @@ static void vfe_wm_line_based(struct vfe_device *vfe, u32 wm,
 		writel_relaxed(0, vfe->base +
 			       VFE_0_BUS_IMAGE_MASTER_n_WR_BUFFER_CFG(wm));
 	}
+}
+
+/*
+ * An RDI write master is normally programmed frame-based, which writes the
+ * frame as one continuous run and so has no per-line stride to pad with. The
+ * same master can be told the two lengths separately instead - how much image
+ * data a line holds, and how far apart the lines are - which is what makes a
+ * padded buffer possible, and is what the vendor driver does for every stream
+ * it does not mark frame-based.
+ *
+ * The registers are the ones vfe_wm_line_based() writes for the pixel path,
+ * with this generation's own arithmetic; only where the words per line come
+ * from differs. vfe_word_per_line() has no case for raw Bayer and needs none,
+ * because a word is eight bytes whatever the format packs into them - which is
+ * also why the pixel path can hand it a byte count for the stride and get the
+ * right answer.
+ */
+static void vfe_wm_raw_stride(struct vfe_device *vfe, u8 wm,
+			      struct v4l2_pix_format_mplane *pix,
+			      unsigned int packed_bpl, u8 enable)
+{
+	u32 reg;
+
+	if (!enable) {
+		writel_relaxed(0, vfe->base +
+			       VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+		writel_relaxed(0, vfe->base +
+			       VFE_0_BUS_IMAGE_MASTER_n_WR_BUFFER_CFG(wm));
+		return;
+	}
+
+	/*
+	 * Line-based is the absence of frame-based rather than a mode of its
+	 * own, so clear the bit here rather than relying on whoever ran last.
+	 */
+	vfe_reg_clr(vfe, VFE_0_BUS_IMAGE_MASTER_n_WR_CFG(wm),
+		    1 << VFE_0_BUS_IMAGE_MASTER_n_WR_CFG_FRM_BASED_SHIFT);
+
+	reg = pix->height - 1;
+	reg |= ((DIV_ROUND_UP(packed_bpl, 8) + 1) / 2 - 1) << 16;
+	writel_relaxed(reg, vfe->base +
+		       VFE_0_BUS_IMAGE_MASTER_n_WR_IMAGE_SIZE(wm));
+
+	reg = 0x3;
+	reg |= (pix->height - 1) << 4;
+	reg |= DIV_ROUND_UP(pix->plane_fmt[0].bytesperline, 8) << 16;
+	writel_relaxed(reg, vfe->base +
+		       VFE_0_BUS_IMAGE_MASTER_n_WR_BUFFER_CFG(wm));
 }
 
 static void vfe_wm_set_framedrop_period(struct vfe_device *vfe, u8 wm, u8 per)
@@ -988,6 +1037,7 @@ static const struct vfe_hw_ops_gen1 vfe_ops_gen1_4_1 = {
 	.wm_frame_based = vfe_wm_frame_based,
 	.wm_get_ping_pong_status = vfe_wm_get_ping_pong_status,
 	.wm_line_based = vfe_wm_line_based,
+	.wm_raw_stride = vfe_wm_raw_stride,
 	.wm_set_framedrop_pattern = vfe_wm_set_framedrop_pattern,
 	.wm_set_framedrop_period = vfe_wm_set_framedrop_period,
 	.wm_set_ping_addr = vfe_wm_set_ping_addr,
