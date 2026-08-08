@@ -58,7 +58,14 @@
 		compatible = "simple-battery";
 		voltage-min-design-microvolt = <3400000>;
 		voltage-max-design-microvolt = <4390000>;
-		charge-full-design-microamp-hours = <3000000>;
+		/*
+		 * 3060 mAh, not the 3000 the pack is sold and named by: it is what
+		 * the vendor's own profile declares and what its gauge integrates
+		 * against, and this is the capacity the OCV table below was
+		 * characterised with, so the two have to agree or a full sweep of
+		 * that table does not add up to a full battery.
+		 */
+		charge-full-design-microamp-hours = <3060000>;
 		constant-charge-current-max-microamp = <2000000>;
 		constant-charge-voltage-max-microvolt = <4390000>;
 
