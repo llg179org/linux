@@ -15,6 +15,35 @@
 #define VFE_FRAME_DROP_UPDATES 2
 #define VFE_NEXT_SOF_MS 500
 
+/**
+ * vfe_rdi_padded() - is this RDI line's buffer wider than the image in it?
+ * @line: the VFE line
+ *
+ * Userspace can ask for a stride larger than the format needs, and does where
+ * the consumer has an alignment of its own - a GPU that will not import a
+ * dmabuf whose pitch it cannot address, say. camss grants that only where it
+ * can act on it, so a granted request shows up here as a bytesperline above
+ * the packed length, and is the one case worth programming the write master
+ * line by line for. Everything else keeps the frame-based programming it has
+ * always had, byte for byte.
+ *
+ * Returns: true when the write master has to leave a gap at the end of each
+ * line, and the ops for this hardware can make it.
+ */
+static bool vfe_rdi_padded(struct vfe_line *line)
+{
+	struct camss_video *video = &line->video_out;
+	unsigned int packed;
+
+	if (!to_vfe(line)->ops_gen1->wm_raw_stride)
+		return false;
+
+	packed = msm_video_packed_bpl(video);
+
+	return packed &&
+	       video->active_fmt.fmt.pix_mp.plane_fmt[0].bytesperline > packed;
+}
+
 int vfe_gen1_halt(struct vfe_device *vfe)
 {
 	unsigned long time;
@@ -66,7 +95,12 @@ static int vfe_disable_output(struct vfe_line *line)
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
 	if (line->id != VFE_LINE_PIX) {
-		vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 0);
+		if (vfe_rdi_padded(line))
+			vfe->ops_gen1->wm_raw_stride(vfe, output->wm_idx[0],
+						     &line->video_out.active_fmt.fmt.pix_mp,
+						     msm_video_packed_bpl(&line->video_out), 0);
+		else
+			vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 0);
 		vfe->ops_gen1->bus_disconnect_wm_from_rdi(vfe, output->wm_idx[0], line->id);
 		vfe->ops_gen1->enable_irq_wm_line(vfe, output->wm_idx[0], line->id, 0);
 		vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[0], 0);
@@ -244,7 +278,12 @@ static int vfe_enable_output(struct vfe_line *line)
 		vfe->ops_gen1->set_rdi_cid(vfe, line->id, 0);
 		vfe->ops_gen1->wm_set_ub_cfg(vfe, output->wm_idx[0],
 					    (ub_size + 1) * output->wm_idx[0], ub_size);
-		vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 1);
+		if (vfe_rdi_padded(line))
+			vfe->ops_gen1->wm_raw_stride(vfe, output->wm_idx[0],
+						     &line->video_out.active_fmt.fmt.pix_mp,
+						     msm_video_packed_bpl(&line->video_out), 1);
+		else
+			vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 1);
 		vfe->ops_gen1->wm_enable(vfe, output->wm_idx[0], 1);
 		vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[0]);
 	} else {
