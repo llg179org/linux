@@ -46,6 +46,13 @@ struct camss_video {
 	struct mutex q_lock;
 	unsigned int bpl_alignment;
 	unsigned int line_based;
+	/*
+	 * Set where the hardware behind this node can leave a gap at the end of
+	 * each line, so a bytesperline larger than the format needs may be
+	 * granted rather than quietly reduced. Independent of @line_based,
+	 * which additionally changes what the node advertises.
+	 */
+	unsigned int can_pad_bpl;
 	const struct camss_format_info *formats;
 	unsigned int nformats;
 };
@@ -54,5 +61,7 @@ int msm_video_register(struct camss_video *video, struct v4l2_device *v4l2_dev,
 		       const char *name);
 
 void msm_video_unregister(struct camss_video *video);
+
+unsigned int msm_video_packed_bpl(struct camss_video *video);
 
 #endif /* QC_MSM_CAMSS_VIDEO_H */
