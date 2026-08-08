@@ -1651,6 +1651,27 @@ static const struct smb_init_register pmi632_init_seq[] = {
 		  AUTO_RECHG_BIT | EN_ANALOG_DROP_IN_VBATT_BIT |
 		  CHARGER_INHIBIT_BIT,
 	  .val = CHARGER_INHIBIT_BIT },
+	/*
+	 * Recharge on the battery voltage rather than on its state of charge.
+	 * The SMB2 sequence has always done this; leaving it out here left the
+	 * comparator looking at a state of charge that nothing under a mainline
+	 * kernel ever supplies, so a charge that had terminated was never
+	 * restarted. Read back on a Fairphone 3 sitting on a charger at 4.24 V
+	 * of a 4.39 V float: FG_UPDATE_CFG_2_SEL 0x00, charge status inhibit,
+	 * zero current into the pack. Qualcomm's own driver takes the same
+	 * choice from the board, and this board makes it - the downstream
+	 * pmi632 node asks for qcom,auto-recharge-vbat-mv and has the
+	 * state-of-charge alternative commented out beside it.
+	 *
+	 * The threshold itself stays at the hardware default: the register that
+	 * carries it is not described here, and a comparator watching the right
+	 * quantity at an unknown threshold beats one watching a quantity that
+	 * is never reported.
+	 */
+	{ .addr = FG_UPDATE_CFG_2_SEL,
+	  .mask = SOC_LT_CHG_RECHARGE_THRESH_SEL_BIT |
+		  VBT_LT_CHG_RECHARGE_THRESH_SEL_BIT,
+	  .val = VBT_LT_CHG_RECHARGE_THRESH_SEL_BIT },
 	/* Default SDP charger to a 500mA USB 2.0 port */
 	{ .addr = USBIN_ICL_OPTIONS,
 	  .mask = USB51_MODE_BIT | USBIN_MODE_CHG_BIT,
