@@ -24,6 +24,7 @@
 
 #include "camss-csid.h"
 #include "camss-vfe.h"
+#include "camss-vfe-gen1.h"
 #include "camss.h"
 
 #define MSM_VFE_NAME "msm_vfe"
@@ -2181,9 +2182,17 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		video_out->ops = &vfe->video_ops;
 		video_out->bpl_alignment = vfe_bpl_align(vfe);
 		video_out->line_based = 0;
+		/*
+		 * An RDI write master can be programmed to leave a gap at the
+		 * end of each line, but only where this generation's ops know
+		 * the register layout well enough to do it - so let them say.
+		 */
+		video_out->can_pad_bpl = vfe->ops_gen1 &&
+					 vfe->ops_gen1->wm_raw_stride;
 		if (i == VFE_LINE_PIX) {
 			video_out->bpl_alignment = 16;
 			video_out->line_based = 1;
+			video_out->can_pad_bpl = 0;
 		}
 
 		video_out->nformats = vfe->line[i].nformats;
