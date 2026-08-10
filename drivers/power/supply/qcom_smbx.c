@@ -425,15 +425,25 @@
 
 /*
  * How often the gauge integrates, and the currents at which an open-circuit
- * voltage reading is trusted enough to correct the integral. The wider band
- * still carries an IR error of a few millivolts, which is why it only nudges;
- * the narrow one is small enough to steer with.
+ * voltage reading is trusted enough to correct the integral. The narrow band
+ * is small enough to steer with; the wider one still carries an IR error of a
+ * few millivolts, which is why it only nudges. Above it the terminal voltage
+ * is recovered to an OCV with the pack's characterised resistance, so even a
+ * loaded discharge is worth a faint pull: it cannot chase the IR noise at a
+ * weight this low, but it closes the loop the integral otherwise runs open.
+ * Without that pull a phone awake on battery - which never draws little enough
+ * to reach the bands above - integrates uncorrected for the whole session and
+ * its error walks off unbounded. A weight is a fraction of a hundred applied
+ * once per poll, so at a ten-second poll the loaded weight settles with a time
+ * constant near a quarter of an hour: slow against the noise, quick against a
+ * drift that would otherwise take hours to cost tens of percent.
  */
 #define SMB_FG_POLL_MS					10000
 #define SMB_FG_OCV_QUIET_UA				50000
 #define SMB_FG_OCV_SETTLED_UA				150000
 #define SMB_FG_OCV_WEIGHT_QUIET				25
 #define SMB_FG_OCV_WEIGHT_SETTLED			3
+#define SMB_FG_OCV_WEIGHT_LOADED			1
 /*
  * A poll this late means the CPU was suspended rather than merely busy, so
  * the last current sample says nothing about the interval. Re-anchor on the
@@ -1332,7 +1342,7 @@ static bool smb_fg_update(struct smb_chip *chip)
 	else if (abs(i_ua) <= SMB_FG_OCV_SETTLED_UA)
 		weight = SMB_FG_OCV_WEIGHT_SETTLED;
 	else
-		weight = 0;
+		weight = SMB_FG_OCV_WEIGHT_LOADED;
 
 	guard(mutex)(&chip->fg_lock);
 
