@@ -70,6 +70,15 @@
 		constant-charge-voltage-max-microvolt = <4390000>;
 
 		/*
+		 * The current at which this pack's charge is over. Both halves
+		 * of the vendor's description agree on it: the PMIC node asks
+		 * for -100 mA against the charger's ADC, and every battery
+		 * profile the tree ships for this phone declares
+		 * qcom,chg-term-ua = <100000>.
+		 */
+		charge-term-current-microamp = <100000>;
+
+		/*
 		 * What a loaded terminal voltage has to be corrected by to
 		 * recover an open-circuit one. This is what the PMIC's own
 		 * gauge measures on this phone: it reports 118 to 126 mOhm
@@ -397,6 +406,23 @@
 
 	/* Downstream's mitigation table, minus its repeated last entry. */
 	qcom,thermal-mitigation = <2000000 1500000 1000000 500000>;
+
+	/*
+	 * No qcom,connector-internal-pull-kohm here, although the downstream
+	 * device tree gives 100 for this PMIC and the charger can regulate its
+	 * input current against a connector thermistor. Enabling it on this
+	 * board stops charging outright: with the connector named as a
+	 * regulation source the charger reports TEMP_ABOVE_RANGE and TLIM in
+	 * MISC_TEMP_RANGE_STATUS while MISC_DIE_TEMP_STATUS stays clear, so it
+	 * is the connector reading, and it reads hot on a phone lying idle at
+	 * 32 degrees. The input limit then goes to zero: the Type-C block sees
+	 * its 5 V, the charger's USBIN sees nothing, and the battery goes on
+	 * discharging with the cable in.
+	 *
+	 * The downstream value describes the reference design; what it does not
+	 * say is whether this board populates that thermistor. Measured here,
+	 * it does not behave as though it does.
+	 */
 
 	status = "okay";
 };
