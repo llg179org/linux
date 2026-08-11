@@ -417,6 +417,21 @@
 #define STAT_IRQ_PULSING_EN_BIT				BIT(0)
 
 /*
+ * Every SPMI peripheral reports the live state of its own interrupt sources in
+ * one register at this offset (smb5-reg.h INT_RT_STS_OFFSET), and the charger's
+ * sources are spread over four of them. Read alongside the charge-status
+ * registers they are the hardware's own account of what it is doing, which is
+ * what a charging fault has to be read against - the driver's derived state
+ * says only what the driver made of it.
+ */
+#define INT_RT_STS_OFFSET				0x10
+#define CHGR_PERIPH					0x000
+#define DCDC_PERIPH					0x100
+#define BATIF_PERIPH					0x200
+#define USB_PERIPH					0x300
+#define MISC_PERIPH					0x600
+
+/*
  * SMB5 only: the connector thermistor, and what the charger does about it.
  * The PMIC biases the thermistor from an internal pull-up, measures it on one
  * of the BATIF ADC channels, and - once that channel is named as a
@@ -569,6 +584,17 @@ static const u8 smb5_charge_type[8] = {
 	POWER_SUPPLY_CHARGE_TYPE_NONE,		/* 7 disable */
 };
 
+/* The same eight codes as text, for the event log */
+static const char * const smb2_charge_status_name[8] = {
+	"trickle", "pre", "fast", "full-on",
+	"taper", "terminate", "inhibit", "disable",
+};
+
+static const char * const smb5_charge_status_name[8] = {
+	"inhibit", "trickle", "pre", "full-on",
+	"taper", "terminate", "pause", "disable",
+};
+
 static const u8 smb2_charge_status[8] = {
 	POWER_SUPPLY_STATUS_CHARGING,		/* 0 trickle */
 	POWER_SUPPLY_STATUS_CHARGING,		/* 1 pre */
@@ -624,6 +650,7 @@ struct smb_init_register {
  *			(BIT(5) on SMB2, BIT(1) on SMB5)
  * @charge_status:	What each of the eight BATTERY_CHARGER_STATUS_1 codes
  *			means on this generation, see smb2_charge_status
+ * @charge_status_name:	The same eight codes as text, for the event log
  * @charge_type:	What kind of charging each of the eight codes is,
  *			see smb2_charge_type
  * @rechg_thresh_reg:	Register holding the battery-voltage recharge threshold,
@@ -660,6 +687,7 @@ struct smb_variant {
 	u32 float_step_uv;
 	u8 ov_bit;
 	const u8 *charge_status;
+	const char * const *charge_status_name;
 	const u8 *charge_type;
 	u16 rechg_thresh_reg;
 	u16 iterm_thresh_reg;
@@ -1147,10 +1175,15 @@ static int smb_property_is_writable(struct power_supply *psy,
 	}
 }
 
+/* Defined below, once the gauge sample it reports is available to it */
+static void smb_log_event(struct smb_chip *chip, const char *name);
+
 static irqreturn_t smb_handle_batt_overvoltage(int irq, void *data)
 {
 	struct smb_chip *chip = data;
 	unsigned int status;
+
+	smb_log_event(chip, "bat-ov");
 
 	regmap_read(chip->regmap, chip->base + BATTERY_CHARGER_STATUS_2,
 		    &status);
@@ -1168,6 +1201,8 @@ static irqreturn_t smb_handle_usb_plugin(int irq, void *data)
 {
 	struct smb_chip *chip = data;
 
+	smb_log_event(chip, "usb-plugin");
+
 	power_supply_changed(chip->chg_psy);
 	if (chip->batt_psy)
 		power_supply_changed(chip->batt_psy);
@@ -1182,6 +1217,8 @@ static irqreturn_t smb_handle_usb_icl_change(int irq, void *data)
 {
 	struct smb_chip *chip = data;
 
+	smb_log_event(chip, "usbin-icl-change");
+
 	power_supply_changed(chip->chg_psy);
 
 	return IRQ_HANDLED;
@@ -1191,6 +1228,8 @@ static irqreturn_t smb_handle_wdog_bark(int irq, void *data)
 {
 	struct smb_chip *chip = data;
 	int rc;
+
+	smb_log_event(chip, "wdog-bark");
 
 	power_supply_changed(chip->chg_psy);
 
@@ -1277,6 +1316,106 @@ static int smb_qg_read_sample(struct smb_chip *chip, unsigned int v_off,
 	*i_ua = -(int)div_s64((s64)i_raw * QG_I_LSB_NA, 1000);
 
 	return 0;
+}
+
+/**
+ * smb_log_event() - report one hardware event with the state it arrived in
+ * @chip: the charger
+ * @name: the interrupt's device-tree name
+ *
+ * A charging fault is a sequence rather than a state: a charge that stalls,
+ * one that restarts, one that never terminates and one that terminated without
+ * anything noticing all look alike once they have settled, and what separates
+ * them is which events the hardware raised and when. So every interrupt the
+ * charger raises is reported here, whether or not this driver acts on it,
+ * together with the registers describing the instant it arrived - the charge
+ * status, the error and JEITA bits, the live interrupt state of all four
+ * charger peripherals, and the gauge's last sample.
+ *
+ * At info level rather than debug, because a charging problem is measured over
+ * hours on a machine nobody is watching, and an instrument that has to be
+ * switched on first is the one that was off when the fault finally happened.
+ * The cost is bounded by the hardware: these interrupt on transitions, so a
+ * steady state - including a finished charge sitting on the cable - is silent.
+ */
+static void smb_log_event(struct smb_chip *chip, const char *name)
+{
+	static const u16 periph[] = {
+		CHGR_PERIPH, DCDC_PERIPH, BATIF_PERIPH, USB_PERIPH, MISC_PERIPH,
+	};
+	unsigned int st1, st2, temp, rt[ARRAY_SIZE(periph)] = {};
+	int v_uv = 0, i_ua = 0, i;
+
+	if (regmap_read(chip->regmap, chip->base + BATTERY_CHARGER_STATUS_1, &st1) ||
+	    regmap_read(chip->regmap, chip->base + BATTERY_CHARGER_STATUS_2, &st2) ||
+	    regmap_read(chip->regmap, chip->base + chip->var->temp_status_reg, &temp))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(periph); i++)
+		regmap_read(chip->regmap, chip->base + periph[i] + INT_RT_STS_OFFSET,
+			    &rt[i]);
+
+	if (chip->var->qg_base)
+		smb_qg_read_sample(chip, QG_LAST_ADC_V_DATA0, &v_uv, &i_ua);
+
+	dev_info(chip->dev,
+		 "evt %s: chg=%s st1=0x%02x st2=0x%02x temp=0x%02x rt=%02x/%02x/%02x/%02x/%02x vbat=%duV ibat=%duA\n",
+		 name,
+		 chip->var->charge_status_name[st1 & BATTERY_CHARGER_STATUS_MASK],
+		 st1, st2, temp, rt[0], rt[1], rt[2], rt[3], rt[4], v_uv, i_ua);
+}
+
+/*
+ * The charger's remaining interrupts, the ones this driver takes no action on.
+ * Reporting them is the action - see smb_log_event(). Every name is optional,
+ * since a board's device tree need not describe any of them, and they are
+ * grouped by the peripheral that raises them.
+ *
+ * Four sources are deliberately absent. Two of them are the gauge keeping its
+ * own house rather than the charger deciding anything, and both arrive far too
+ * often to sit in a log next to events that matter: BATIF's all-chnl-conv-done
+ * marks an ADC conversion, and CHGR's fg-fvcal-qualified marks a float-voltage
+ * calibration sample - measured on a Fairphone 3 at roughly one a second while
+ * merely discharging, which was 87 of the first 88 events traced and would be
+ * some thirty-six thousand lines across a night on the cable. The Type-C block
+ * belongs to another driver on this PMIC and describes its own interrupts on
+ * its own node, so requesting them here would take them away from it. And the
+ * flash module's are about a camera flash's current budget rather than about
+ * charging the pack, and mainline gives that peripheral no node at all.
+ */
+static const char * const smb_event_irqs[] = {
+	/* CHGR - the charge itself */
+	"chgr-error", "chg-state-change", "step-chg-state-change",
+	"step-chg-soc-update-fail", "step-chg-soc-update-req",
+	"vph-alarm", "vph-drop-prechg",
+	/* DCDC - the switcher feeding it */
+	"otg-fail", "otg-oc-disable-sw", "otg-oc-hiccup", "bsm-active",
+	"high-duty-cycle", "input-current-limiting", "concurrent-mode-disable",
+	"switcher-power-ok",
+	/* BATIF - the pack */
+	"bat-temp", "bat-low", "bat-therm-or-id-missing",
+	"bat-terminal-missing", "buck-oc", "vph-ov",
+	/* USB - the input */
+	"usbin-collapse", "usbin-vashdn", "usbin-uv", "usbin-ov",
+	"usbin-revi-change", "usbin-src-change",
+	/* MISC - what limited the input, and how hot doing it got */
+	"wdog-snarl", "aicl-fail", "aicl-done", "smb-en",
+	"imp-trigger", "temp-change", "temp-change-smb",
+};
+
+/* What a reported-only interrupt carries to the shared handler */
+struct smb_event {
+	struct smb_chip *chip;
+	const char *name;
+};
+
+static irqreturn_t smb_handle_event(int irq, void *data)
+{
+	struct smb_event *evt = data;
+
+	smb_log_event(evt->chip, evt->name);
+
+	return IRQ_HANDLED;
 }
 
 /*
@@ -2073,6 +2212,7 @@ static const struct smb_variant smb_variant_pmi8998 = {
 	.ov_bit = CHARGER_ERROR_STATUS_BAT_OV_BIT,
 	.charge_status = smb2_charge_status,
 	.charge_type = smb2_charge_type,
+	.charge_status_name = smb2_charge_status_name,
 	.inhibit_code = 6,
 	.temp_status_reg = BATTERY_CHARGER_STATUS_2,
 	.temp_status_shift = 0,
@@ -2090,6 +2230,7 @@ static const struct smb_variant smb_variant_pm660 = {
 	.ov_bit = CHARGER_ERROR_STATUS_BAT_OV_BIT,
 	.charge_status = smb2_charge_status,
 	.charge_type = smb2_charge_type,
+	.charge_status_name = smb2_charge_status_name,
 	.inhibit_code = 6,
 	.temp_status_reg = BATTERY_CHARGER_STATUS_2,
 	.temp_status_shift = 0,
@@ -2107,6 +2248,7 @@ static const struct smb_variant smb_variant_pmi632 = {
 	.ov_bit = SMB5_CHARGER_ERROR_STATUS_BAT_OV_BIT,
 	.charge_status = smb5_charge_status,
 	.charge_type = smb5_charge_type,
+	.charge_status_name = smb5_charge_status_name,
 	.rechg_thresh_reg = ADC_RECHARGE_THRESHOLD_MSB,
 	.iterm_thresh_reg = ADC_ITERM_UP_THD_MSB,
 	.thermreg_src_reg = MISC_THERMREG_SRC_CFG,
@@ -2688,7 +2830,7 @@ static int smb_probe(struct platform_device *pdev)
 	struct power_supply_config supply_config = {};
 	struct power_supply_desc *desc;
 	struct smb_chip *chip;
-	int rc, irq;
+	int rc, irq, i;
 
 	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
@@ -2909,6 +3051,37 @@ static int smb_probe(struct platform_device *pdev)
 				return dev_err_probe(chip->dev, rc,
 						     "Couldn't request good-ocv irq\n");
 		}
+	}
+
+	/*
+	 * Everything else the charger can signal, reported and not acted on.
+	 * Each is optional and skipped where the device tree does not name it,
+	 * so a board describing none of them behaves exactly as before.
+	 */
+	for (i = 0; i < ARRAY_SIZE(smb_event_irqs); i++) {
+		struct smb_event *evt;
+
+		irq = platform_get_irq_byname_optional(to_platform_device(chip->dev),
+						       smb_event_irqs[i]);
+		if (irq == -EPROBE_DEFER)
+			return irq;
+		if (irq <= 0)
+			continue;
+
+		evt = devm_kzalloc(chip->dev, sizeof(*evt), GFP_KERNEL);
+		if (!evt)
+			return -ENOMEM;
+
+		evt->chip = chip;
+		evt->name = smb_event_irqs[i];
+
+		rc = devm_request_threaded_irq(chip->dev, irq, NULL,
+					       smb_handle_event, IRQF_ONESHOT,
+					       smb_event_irqs[i], evt);
+		if (rc < 0)
+			return dev_err_probe(chip->dev, rc,
+					     "Couldn't request irq %s\n",
+					     smb_event_irqs[i]);
 	}
 
 	devm_device_init_wakeup(chip->dev);
