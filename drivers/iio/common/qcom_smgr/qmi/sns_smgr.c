@@ -713,4 +713,5 @@ enum smgr_sensor_type sns_smgr_sensor_type_from_str(const char *str)
 }
 EXPORT_SYMBOL_GPL(sns_smgr_sensor_type_from_str);
 
+MODULE_DESCRIPTION("QMI interface to the Qualcomm Sensor Manager");
 MODULE_LICENSE("GPL");
