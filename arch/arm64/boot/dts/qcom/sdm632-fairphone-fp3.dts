@@ -51,7 +51,7 @@
 	 *
 	 * That means the current below is the pack's full rating, not a
 	 * reduction of it. On a phone fitted with the other pack the charger
-	 * finds the mismatch through qcom,batt-id-ohm below and falls back to
+	 * finds the mismatch through id-resistor-ohms below and falls back to
 	 * its conservative default rather than charging a 50 kOhm cell to a
 	 * 10 kOhm cell's limits; describing both packs properly needs a
 	 * binding for more than one monitored-battery, which does not exist.
@@ -94,36 +94,16 @@
 		factory-internal-resistance-micro-ohms = <120000>;
 
 		/*
-		 * The ID resistor this pack presents, and how the charger is
-		 * allowed to charge it. Both are Fairphone's characterisation
-		 * of this cell, from qg-batterydata-Fuji-3000mah-Jan22th2019-
-		 * pmi632: 10 kOhm ID, hard limits at 0 and 55 degC, soft limits
-		 * at 15 and 45, and the jeita-fcc-ranges entries for the zones
-		 * outside the soft ones. The thresholds are the raw BAT_THERM
-		 * ADC codes the comparators take; verified against a phone
-		 * running the vendor stack, which programs the same four.
+		 * The ID resistor this pack presents: 10 kOhm, Fairphone's own
+		 * characterisation of this cell, from
+		 * qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632.
 		 *
-		 * The ID matters because the FP3 also ships a second 3000 mAh
-		 * pack ("Kayo", 50 kOhm) rated 2.7 A with its cool band at
-		 * 20 degC. Only one battery can be described here, so the
-		 * charger checks the resistor before applying any of it.
+		 * It matters because the FP3 also ships a second 3000 mAh pack
+		 * ("Kayo", 50 kOhm) rated 2.7 A with its cool band at 20 degC.
+		 * Only one battery can be described here, so the charger checks
+		 * the resistor before applying any of the limits above.
 		 */
-		qcom,batt-id-ohm = <10000>;
-
-		/*
-		 * The voltage at which a finished charge is started again.
-		 * Fairphone's own pmi632 node carries this as
-		 * qcom,auto-recharge-vbat-mv = <4300>, under a dated vendor
-		 * comment naming the voltage it wants, with the
-		 * state-of-charge alternative commented out beside it. Ninety
-		 * millivolts below the float, so a pack is not cycled for the
-		 * few millivolts it relaxes by.
-		 */
-		qcom,auto-recharge-microvolt = <4300000>;
-
-		qcom,jeita-hard-thresholds = <0x5675 0x1987>;
-		qcom,jeita-soft-thresholds = <0x44ff 0x2204>;
-		qcom,jeita-soft-fcc-microamp = <600000 1000000>;
+		id-resistor-ohms = <10000>;
 
 		/*
 		 * Voltage-based fuel gauge: OCV->capacity lookup table.
@@ -539,7 +519,33 @@
 	 * follows from the channel chosen in pmi632.dtsi, but nothing in the
 	 * ADC consumer interface exposes that, so the board states it.
 	 */
-	qcom,batt-id-pullup-ohm = <100000>;
+	qcom,batt-id-pullup-ohms = <100000>;
+
+	/*
+	 * The voltage at which a finished charge is started again. Fairphone's
+	 * own pmi632 node carries this as qcom,auto-recharge-vbat-mv = <4300>,
+	 * under a dated vendor comment naming the voltage it wants, with the
+	 * state-of-charge alternative commented out beside it. Ninety
+	 * millivolts below the float, so a pack is not cycled for the few
+	 * millivolts it relaxes by.
+	 */
+	qcom,auto-recharge-microvolt = <4300000>;
+
+	/*
+	 * Hard limits at 0 and 55 degC, soft limits at 15 and 45, and the
+	 * currents to be left with in the two soft zones - Fairphone's
+	 * characterisation of the Fuji pack, from
+	 * qg-batterydata-Fuji-3000mah-Jan22th2019-pmi632, verified against a
+	 * phone running the vendor stack, which programs the same four.
+	 *
+	 * These live on the charger and not on the battery because they are raw
+	 * BAT_THERM ADC codes: which code a temperature produces depends on
+	 * this PMIC's ADC full scale and on the pull-up above as much as on the
+	 * cell, so a code cannot travel with a pack.
+	 */
+	qcom,jeita-hard-thresholds = <0x5675 0x1987>;
+	qcom,jeita-soft-thresholds = <0x44ff 0x2204>;
+	qcom,jeita-soft-fcc-microamp = <600000 1000000>;
 
 	/* Downstream's mitigation table, minus its repeated last entry. */
 	qcom,thermal-mitigation = <2000000 1500000 1000000 500000>;
