@@ -547,18 +547,27 @@
 	/*
 	 * No qcom,connector-internal-pull-kohm here, although the downstream
 	 * device tree gives 100 for this PMIC and the charger can regulate its
-	 * input current against a connector thermistor. Enabling it on this
-	 * board stops charging outright: with the connector named as a
-	 * regulation source the charger reports TEMP_ABOVE_RANGE and TLIM in
-	 * MISC_TEMP_RANGE_STATUS while MISC_DIE_TEMP_STATUS stays clear, so it
-	 * is the connector reading, and it reads hot on a phone lying idle at
-	 * 32 degrees. The input limit then goes to zero: the Type-C block sees
-	 * its 5 V, the charger's USBIN sees nothing, and the battery goes on
-	 * discharging with the cable in.
+	 * input current against a connector thermistor.
 	 *
-	 * The downstream value describes the reference design; what it does not
-	 * say is whether this board populates that thermistor. Measured here,
-	 * it does not behave as though it does.
+	 * Enabling it here stopped charging outright: the charger reported
+	 * TEMP_ABOVE_RANGE and TLIM in MISC_TEMP_RANGE_STATUS while
+	 * MISC_DIE_TEMP_STATUS stayed clear, so it was the connector reading,
+	 * and it read hot on a phone lying idle at 32 degrees. The input limit
+	 * went to zero - the Type-C block saw its 5 V, the charger's USBIN saw
+	 * nothing, and the battery discharged with the cable in.
+	 *
+	 * The thermistor is not the problem, though, and an earlier version of
+	 * this comment wrongly said the board does not populate one. The vendor
+	 * stack on the same phone runs with BATIF_ADC_CHANNEL_EN = 0xd5 and
+	 * MISC_THERMREG_SRC_CFG = 0x13 - connector channel and regulation
+	 * source both on - and reads TEMP_RANGE_STATUS = 0x02, in range. So the
+	 * part is there and works; something else in the ADC configuration is
+	 * missing here. The candidates, all in BATIF and none of them named by
+	 * this driver, differ between the two: 0x12e2 (0x43 here, 0x07 there),
+	 * 0x12e5 (0x42/0x46), 0x12ea (0x00/0x02), 0x12ed (0x94/0x82).
+	 *
+	 * Until that is understood, leave the property out rather than ship a
+	 * board that will not charge.
 	 */
 
 	status = "okay";
