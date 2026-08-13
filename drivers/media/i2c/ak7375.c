@@ -96,6 +96,9 @@ struct ak7375_device {
 
 	/* active or standby mode */
 	bool active;
+
+	/* a runtime PM reference is held while the lens is away from rest */
+	bool driven;
 };
 
 static inline struct ak7375_device *to_ak7375_vcm(struct v4l2_ctrl *ctrl)
@@ -130,36 +133,68 @@ static int ak7375_i2c_write(struct ak7375_device *ak7375,
 	return 0;
 }
 
+/*
+ * A voice coil holds a position only while it is driven, so the motor's power
+ * follows the requested position rather than the file descriptor: a reference
+ * is taken for the first position away from rest and dropped again when the
+ * lens is asked back to it, where the spring holds it for nothing.
+ *
+ * Powering on open instead costs the full holding current for as long as any
+ * consumer keeps the subdev open, which on a phone is whenever anything
+ * enumerates cameras - measured at 0.30 W on a Fairphone 3 with nothing taking
+ * pictures.
+ */
 static int ak7375_set_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct ak7375_device *dev_vcm = to_ak7375_vcm(ctrl);
 	const struct ak73xx_chipdef *cdef = dev_vcm->cdef;
+	struct device *dev = dev_vcm->sd.dev;
+	int ret;
 
-	if (ctrl->id == V4L2_CID_FOCUS_ABSOLUTE)
-		return ak7375_i2c_write(dev_vcm, cdef->reg_position,
-					ctrl->val << cdef->shift_pos, 2);
+	if (ctrl->id != V4L2_CID_FOCUS_ABSOLUTE)
+		return -EINVAL;
 
-	return -EINVAL;
+	if (ctrl->val && !dev_vcm->driven) {
+		ret = pm_runtime_resume_and_get(dev);
+		if (ret)
+			return ret;
+		dev_vcm->driven = true;
+	}
+
+	/* Already parked and unpowered: rest is where it would end up anyway. */
+	if (!dev_vcm->driven)
+		return 0;
+
+	ret = ak7375_i2c_write(dev_vcm, cdef->reg_position,
+			       ctrl->val << cdef->shift_pos, 2);
+
+	if (!ctrl->val) {
+		dev_vcm->driven = false;
+		/* The runtime suspend below walks the lens down and parks it. */
+		pm_runtime_put(dev);
+	}
+
+	return ret;
 }
 
 static const struct v4l2_ctrl_ops ak7375_vcm_ctrl_ops = {
 	.s_ctrl = ak7375_set_ctrl,
 };
 
-static int ak7375_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
-{
-	return pm_runtime_resume_and_get(sd->dev);
-}
-
 static int ak7375_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
-	pm_runtime_put(sd->dev);
+	struct ak7375_device *dev_vcm = sd_to_ak7375_vcm(sd);
+
+	/* A consumer that goes away mid-focus must not leave the coil driven. */
+	if (dev_vcm->driven) {
+		dev_vcm->driven = false;
+		pm_runtime_put(sd->dev);
+	}
 
 	return 0;
 }
 
 static const struct v4l2_subdev_internal_ops ak7375_int_ops = {
-	.open = ak7375_open,
 	.close = ak7375_close,
 };
 
