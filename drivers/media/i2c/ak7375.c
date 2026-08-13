@@ -9,6 +9,7 @@
 #include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-fh.h>
 
 /* How many times to reissue the first transfer of a resume before failing. */
 #define AK7375_ACTIVE_RETRIES	5
@@ -185,7 +186,14 @@ static int ak7375_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ak7375_device *dev_vcm = sd_to_ak7375_vcm(sd);
 
-	/* A consumer that goes away mid-focus must not leave the coil driven. */
+	/*
+	 * A consumer that goes away mid-focus must not leave the coil driven -
+	 * but only the last one may say so, since the lens is shared and the
+	 * one still holding it is entitled to keep its focus.
+	 */
+	if (!v4l2_fh_is_singular(&fh->vfh))
+		return 0;
+
 	if (dev_vcm->driven) {
 		dev_vcm->driven = false;
 		pm_runtime_put(sd->dev);
