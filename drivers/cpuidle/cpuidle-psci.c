@@ -489,4 +489,13 @@ static int __init psci_idle_init(void)
 
 	return 0;
 }
-device_initcall(psci_idle_init);
+
+/*
+ * A faux device is probed synchronously and cannot be deferred, so this has to
+ * run after the CPU PM domain provider has had its own probe retried. That
+ * retry is flushed by deferred_probe_initcall(), a late_initcall, which is why
+ * a device_initcall here loses the race whenever the provider depends on a
+ * driver that probes after it - an always-on domain above the CPU clusters,
+ * for instance.
+ */
+late_initcall_sync(psci_idle_init);
