@@ -250,7 +250,7 @@
 			};
 		};
 
-		cluster-idle-states {
+		domain-idle-states {
 			cluster_ret: cluster-retention {
 				compatible = "domain-idle-state";
 				idle-state-name = "cluster-ret";
@@ -280,10 +280,8 @@
 				min-residency-us = <2500>;
 				local-timer-stop;
 			};
-		};
 
-		system-idle-states {
-			system_pc: system-power-collapse {
+			system_pc: domain-system-power-collapse {
 				compatible = "domain-idle-state";
 				idle-state-name = "system-pc";
 				arm,psci-suspend-param = <0x41000353>;
