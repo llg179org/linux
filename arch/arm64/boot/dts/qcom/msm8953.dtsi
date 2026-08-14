@@ -908,6 +908,11 @@
 			clock-names = "core";
 		};
 
+		sram@290000 {
+			compatible = "qcom,rpm-stats";
+			reg = <0x00290000 0x10000>;
+		};
+
 		bimc: interconnect@400000 {
 			compatible = "qcom,msm8953-bimc";
 			reg = <0x00400000 0x5a000>;
