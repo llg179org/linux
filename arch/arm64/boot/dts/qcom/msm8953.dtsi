@@ -555,6 +555,24 @@
 				    "LPASS";
 	};
 
+	mpm: interrupt-controller {
+		compatible = "qcom,mpm";
+		qcom,rpm-msg-ram = <&apss_mpm>;
+		interrupts = <GIC_SPI 171 IRQ_TYPE_EDGE_RISING>;
+		mboxes = <&apcs 1>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		#power-domain-cells = <0>;
+		interrupt-parent = <&intc>;
+		qcom,mpm-pin-count = <96>;
+		qcom,mpm-pin-map = <2 184>,  /* tsens_upper_lower_int */
+				   <37 220>, /* qmp_usb3_lfps_rxterm_irq */
+				   <49 136>, /* qusb2phy_dpse_hv */
+				   <53 72>,  /* mdss_irq */
+				   <58 136>, /* qusb2phy_dmse_hv */
+				   <88 190>; /* ee0_krait_hlos_spmi_periph_irq */
+	};
+
 	psci {
 		compatible = "arm,psci-1.0";
 		method = "smc";
@@ -610,11 +628,13 @@
 
 		cluster0_pd: power-domain-cluster0 {
 			#power-domain-cells = <0>;
+			power-domains = <&mpm>;
 			domain-idle-states = <&cluster_ret>, <&cluster_gdhs>, <&cluster_pc>;
 		};
 
 		cluster1_pd: power-domain-cluster1 {
 			#power-domain-cells = <0>;
+			power-domains = <&mpm>;
 			domain-idle-states = <&cluster_ret>, <&cluster_gdhs>, <&cluster_pc>;
 		};
 	};
@@ -887,6 +907,10 @@
 
 			apss_master_stats: sram@150 {
 				reg = <0x150 0x50>;
+			};
+
+			apss_mpm: sram@1d4 {
+				reg = <0x1d4 0x48>;
 			};
 
 			mpss_master_stats: sram@1150 {
