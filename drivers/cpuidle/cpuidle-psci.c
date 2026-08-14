@@ -489,6 +489,7 @@ static int __init psci_idle_init(void)
 
 	return 0;
 }
+
 /*
  * A faux device is probed synchronously and cannot be deferred, so this has to
  * run after the CPU PM domain provider has had its own probe retried. That
