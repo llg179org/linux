@@ -282,7 +282,7 @@
 			};
 		};
 
-		system-idle-states {
+		domain-idle-states {
 			system_pc: system-power-collapse {
 				compatible = "domain-idle-state";
 				idle-state-name = "system-pc";
