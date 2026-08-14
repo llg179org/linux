@@ -258,7 +258,6 @@
 				entry-latency-us = <120>;
 				exit-latency-us = <200>;
 				min-residency-us = <1200>;
-				local-timer-stop;
 			};
 
 			cluster_gdhs: cluster-gdhs {
@@ -268,7 +267,6 @@
 				entry-latency-us = <150>;
 				exit-latency-us = <220>;
 				min-residency-us = <1800>;
-				local-timer-stop;
 			};
 
 			cluster_pc: cluster-power-collapse {
@@ -278,7 +276,6 @@
 				entry-latency-us = <270>;
 				exit-latency-us = <430>;
 				min-residency-us = <2500>;
-				local-timer-stop;
 			};
 
 			system_pc: domain-system-power-collapse {
@@ -288,7 +285,6 @@
 				entry-latency-us = <1495>;
 				exit-latency-us = <11027>;
 				min-residency-us = <13000>;
-				local-timer-stop;
 			};
 		};
 
