@@ -1048,6 +1048,7 @@
 			#gpio-cells = <2>;
 			interrupt-controller;
 			#interrupt-cells = <2>;
+			wakeup-parent = <&mpm>;
 
 			i2c_1_default: i2c-1-default-state {
 				pins = "gpio2", "gpio3";
