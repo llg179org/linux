@@ -541,6 +541,20 @@
 		interrupts = <GIC_PPI 7 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_HIGH)>;
 	};
 
+	rpm-master-stats {
+		compatible = "qcom,rpm-master-stats";
+		qcom,rpm-msg-ram = <&apss_master_stats>,
+				   <&mpss_master_stats>,
+				   <&pronto_master_stats>,
+				   <&tz_master_stats>,
+				   <&lpass_master_stats>;
+		qcom,master-names = "APSS",
+				    "MPSS",
+				    "PRONTO",
+				    "TZ",
+				    "LPASS";
+	};
+
 	psci {
 		compatible = "arm,psci-1.0";
 		method = "smc";
@@ -866,6 +880,30 @@
 		rpm_msg_ram: sram@60000 {
 			compatible = "qcom,rpm-msg-ram";
 			reg = <0x00060000 0x8000>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0 0x00060000 0x8000>;
+
+			apss_master_stats: sram@150 {
+				reg = <0x150 0x50>;
+			};
+
+			mpss_master_stats: sram@1150 {
+				reg = <0x1150 0x50>;
+			};
+
+			pronto_master_stats: sram@2150 {
+				reg = <0x2150 0x50>;
+			};
+
+			tz_master_stats: sram@3150 {
+				reg = <0x3150 0x50>;
+			};
+
+			lpass_master_stats: sram@4150 {
+				reg = <0x4150 0x50>;
+			};
 		};
 
 		hsusb_phy: phy@79000 {
