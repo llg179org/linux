@@ -282,6 +282,18 @@
 			};
 		};
 
+		system-idle-states {
+			system_pc: system-power-collapse {
+				compatible = "domain-idle-state";
+				idle-state-name = "system-pc";
+				arm,psci-suspend-param = <0x41000353>;
+				entry-latency-us = <1495>;
+				exit-latency-us = <11027>;
+				min-residency-us = <13000>;
+				local-timer-stop;
+			};
+		};
+
 		l2_0: l2-cache-0 {
 			compatible = "cache";
 			cache-level = <2>;
@@ -628,14 +640,20 @@
 
 		cluster0_pd: power-domain-cluster0 {
 			#power-domain-cells = <0>;
-			power-domains = <&mpm>;
+			power-domains = <&system_pd>;
 			domain-idle-states = <&cluster_ret>, <&cluster_gdhs>, <&cluster_pc>;
 		};
 
 		cluster1_pd: power-domain-cluster1 {
 			#power-domain-cells = <0>;
-			power-domains = <&mpm>;
+			power-domains = <&system_pd>;
 			domain-idle-states = <&cluster_ret>, <&cluster_gdhs>, <&cluster_pc>;
+		};
+
+		system_pd: power-domain-system {
+			#power-domain-cells = <0>;
+			power-domains = <&mpm>;
+			domain-idle-states = <&system_pc>;
 		};
 	};
 
