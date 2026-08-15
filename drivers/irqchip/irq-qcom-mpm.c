@@ -21,6 +21,8 @@
 #include <linux/slab.h>
 #include <linux/soc/qcom/irq.h>
 #include <linux/spinlock.h>
+#include <linux/tick.h>
+#include <clocksource/arm_arch_timer.h>
 
 /*
  * This is the driver for Qualcomm MPM (MSM Power Manager) interrupt controller,
@@ -292,6 +294,34 @@ static irqreturn_t qcom_mpm_handler(int irq, void *dev_id)
 	return ret;
 }
 
+/* The RPM is not asked to keep the AP down for longer than this. */
+#define MPM_MAX_SLEEP_NS	(NSEC_PER_SEC)
+
+/*
+ * The two words in front of the register block hold the timestamp, in
+ * architected timer ticks, at which the RPM has to bring the application
+ * processor back up. Program it from the next timer event before handing
+ * the vMPM over, otherwise the RPM has no wakeup deadline to honour.
+ */
+static void mpm_write_wakeup(struct qcom_mpm_priv *priv)
+{
+	ktime_t next = tick_nohz_get_next_hrtimer();
+	u64 ticks;
+	s64 delta;
+
+	delta = ktime_to_ns(ktime_sub(next, ktime_get()));
+	if (delta < 0)
+		delta = 0;
+	else if (delta > MPM_MAX_SLEEP_NS)
+		delta = MPM_MAX_SLEEP_NS;
+
+	ticks = arch_timer_read_counter() +
+		mul_u64_u32_div(delta, arch_timer_get_cntfrq(), NSEC_PER_SEC);
+
+	writel_relaxed(lower_32_bits(ticks), priv->base);
+	writel_relaxed(upper_32_bits(ticks), priv->base + 4);
+}
+
 static int mpm_pd_power_off(struct generic_pm_domain *genpd)
 {
 	struct qcom_mpm_priv *priv = container_of(genpd, struct qcom_mpm_priv,
@@ -300,6 +330,8 @@ static int mpm_pd_power_off(struct generic_pm_domain *genpd)
 
 	for (i = 0; i < priv->reg_stride; i++)
 		qcom_mpm_write(priv, MPM_REG_STATUS, i, 0);
+
+	mpm_write_wakeup(priv);
 
 	/* Notify RPM to write vMPM into HW */
 	ret = mbox_send_message(priv->mbox_chan, NULL);
