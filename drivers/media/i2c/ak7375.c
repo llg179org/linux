@@ -412,8 +412,17 @@ static const struct of_device_id ak7375_of_table[] = {
 };
 MODULE_DEVICE_TABLE(of, ak7375_of_table);
 
+/*
+ * The system sleep callbacks go through runtime PM rather than call the same
+ * functions directly. A system resume runs on every device, whether or not
+ * runtime PM left it suspended, so calling the resume path unguarded powers
+ * the motor up for a lens nobody has asked for and drives it back to the last
+ * requested position. Runtime PM still has the device recorded as suspended,
+ * so it never calls the suspend side again, and the supplies stay on for as
+ * long as the system is up.
+ */
 static const struct dev_pm_ops ak7375_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(ak7375_vcm_suspend, ak7375_vcm_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 	SET_RUNTIME_PM_OPS(ak7375_vcm_suspend, ak7375_vcm_resume, NULL)
 };
 
