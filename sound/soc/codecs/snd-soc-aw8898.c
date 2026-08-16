@@ -6,9 +6,12 @@
 // Copyright (c) 2025 Luca Weiss <luca@lucaweiss.eu>
 
 #include <linux/device.h>
+#include <linux/devm-helpers.h>
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/regulator/consumer.h>
+#include <linux/workqueue.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
@@ -89,6 +92,12 @@ struct aw8898 {
 	struct regulator_bulk_data supplies[AW8898_NUM_SUPPLIES];
 	enum aw8898_mode dev_mode;
 	bool cfg_loaded;
+
+	/* EXPERIMENT, not for merge. */
+	struct delayed_work watch;
+	int watch_last_err;
+	int watch_dead;
+	bool watch_started;
 };
 
 struct aw8898_cfg {
@@ -129,6 +138,50 @@ static void aw8898_live_id(struct aw8898 *aw8898, const char *where)
 
 	dev_info(&aw8898->client->dev, "LIVE[%s]: err=%d id=0x%x\n",
 		 where, err, id);
+}
+
+/*
+ * EXPERIMENT, not for merge. Sample the chip from inside the driver every
+ * 250 ms and report the moment it stops answering, together with everything
+ * that could explain it.
+ *
+ * A userspace poller on the regmap debugfs could already date the death, but
+ * only against its own clock: it cannot be read next to the kernel's own log,
+ * and every read it makes toggles cache_bypass, which races with any other
+ * regmap user. Sampling here puts the death on the same timeline as the
+ * regulator, clock and remoteproc messages, which is what "no kernel event in
+ * the window" has to be checked against.
+ */
+static void aw8898_watch_work(struct work_struct *work)
+{
+	struct aw8898 *aw8898 = container_of(to_delayed_work(work),
+					     struct aw8898, watch);
+	unsigned int id;
+	int err;
+
+	regcache_cache_bypass(aw8898->regmap, true);
+	err = regmap_read(aw8898->regmap, AW8898_ID, &id);
+	regcache_cache_bypass(aw8898->regmap, false);
+
+	if (err != aw8898->watch_last_err) {
+		dev_info(&aw8898->client->dev,
+			 "WATCH: id read %d -> %d (id=0x%x) reset=%d vdd=%d vddio=%d dvdd=%d\n",
+			 aw8898->watch_last_err, err, id,
+			 gpiod_get_value_cansleep(aw8898->reset),
+			 regulator_is_enabled(aw8898->supplies[0].consumer),
+			 regulator_is_enabled(aw8898->supplies[1].consumer),
+			 regulator_is_enabled(aw8898->supplies[2].consumer));
+		aw8898->watch_last_err = err;
+	}
+
+	if (err) {
+		if (++aw8898->watch_dead > 8)
+			return;
+	} else {
+		aw8898->watch_dead = 0;
+	}
+
+	schedule_delayed_work(&aw8898->watch, msecs_to_jiffies(250));
 }
 
 static void aw8898_update_dev_mode(struct aw8898 *aw8898)
@@ -599,6 +652,13 @@ static int aw8898_probe(struct i2c_client *client)
 		return dev_err_probe(&client->dev, ret, "Chip ID check failed\n");
 
 	dev_set_drvdata(&client->dev, aw8898);
+
+	/* EXPERIMENT, not for merge. */
+	ret = devm_delayed_work_autocancel(&client->dev, &aw8898->watch,
+					   aw8898_watch_work);
+	if (ret)
+		return ret;
+	schedule_delayed_work(&aw8898->watch, msecs_to_jiffies(250));
 
 	ret = devm_snd_soc_register_component(&client->dev, &soc_component_dev_aw8898,
 					      aw8898_dai, ARRAY_SIZE(aw8898_dai));
