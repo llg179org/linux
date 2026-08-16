@@ -302,6 +302,13 @@ static irqreturn_t qcom_mpm_handler(int irq, void *dev_id)
  * architected timer ticks, at which the RPM has to bring the application
  * processor back up. Program it from the next timer event before handing
  * the vMPM over, otherwise the RPM has no wakeup deadline to honour.
+ *
+ * The current time comes from ktime_get_mono_fast_ns() rather than ktime_get():
+ * this runs from the domain's ->power_off callback, which on suspend-to-idle is
+ * reached after timekeeping_suspend(), where ktime_get() is not allowed to be
+ * called and says so with a WARN. The fast accessor is the one that stays
+ * usable across that window; it may lag by the length of the window, which the
+ * clamp below already bounds.
  */
 static void mpm_write_wakeup(struct qcom_mpm_priv *priv)
 {
@@ -309,7 +316,7 @@ static void mpm_write_wakeup(struct qcom_mpm_priv *priv)
 	u64 ticks;
 	s64 delta;
 
-	delta = ktime_to_ns(ktime_sub(next, ktime_get()));
+	delta = ktime_to_ns(next) - ktime_get_mono_fast_ns();
 	if (delta < 0)
 		delta = 0;
 	else if (delta > MPM_MAX_SLEEP_NS)
