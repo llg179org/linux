@@ -401,6 +401,27 @@ static int aw8898_component_probe(struct snd_soc_component *component)
 
 	aw8898->component = component;
 
+	/* EXPERIMENT, not for merge: is the chip still on the bus when the card
+	 * binds us? A live read here dates the death to before or after this
+	 * point without needing userspace to be up.
+	 */
+	{
+		unsigned int id;
+		int err;
+
+		/* ☠️ AW8898_ID is not volatile, so a plain read would be served
+		 * from the cache and report success on an absent chip. Bypass
+		 * it: only a read that has to touch the wire answers this.
+		 */
+		regcache_cache_bypass(aw8898->regmap, true);
+		err = regmap_read(aw8898->regmap, AW8898_ID, &id);
+		regcache_cache_bypass(aw8898->regmap, false);
+
+		dev_info(component->dev,
+			 "component_probe: live chip id read -> %d (0x%x)\n",
+			 err, id);
+	}
+
 	return 0;
 }
 
@@ -421,7 +442,8 @@ static int aw8898_drv_event(struct snd_soc_dapm_widget *w,
 		ret = 0;
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		aw8898_set_power(aw8898, false);
+		/* EXPERIMENT, not for merge: does the PDN write kill the bus? */
+		dev_info(component->dev, "POST_PMD: NOT powering down (experiment)\n");
 		ret = 0;
 		break;
 	default:
