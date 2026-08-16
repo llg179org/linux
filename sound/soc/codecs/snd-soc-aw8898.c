@@ -454,11 +454,29 @@ static const struct snd_soc_component_driver soc_component_dev_aw8898 = {
 	.num_controls		= ARRAY_SIZE(aw8898_controls),
 };
 
+/*
+ * SYSST reports what the hardware is doing, so it changes without the driver
+ * writing it. Leaving it cacheable makes .prepare's regmap_read_poll_timeout()
+ * unable to observe anything: the first read populates the cache and every
+ * later one is answered from it, so the loop spins on one sample until it
+ * times out, whether or not the PLL locked in the meantime.
+ */
+static bool aw8898_volatile_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case AW8898_SYSST:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static const struct regmap_config aw8898_regmap = {
 	.reg_bits = 8,
 	.val_bits = 16,
 
 	.max_register = AW8898_MAX_REGISTER,
+	.volatile_reg = aw8898_volatile_reg,
 	.cache_type = REGCACHE_MAPLE,
 };
 
