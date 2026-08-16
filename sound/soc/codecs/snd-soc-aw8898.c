@@ -111,6 +111,26 @@ static void aw8898_set_power(struct aw8898 *aw8898, bool on)
 			   FIELD_PREP(AW8898_SYSCTRL_PW_MASK, val));
 }
 
+/*
+ * EXPERIMENT, not for merge. Read the chip ID off the wire and say so.
+ *
+ * ☠️ AW8898_ID is not volatile, so a plain read is answered from the cache and
+ * would report a live chip forever. Only a bypassed read touches the bus, and
+ * only its error code says whether the chip is still there.
+ */
+static void aw8898_live_id(struct aw8898 *aw8898, const char *where)
+{
+	unsigned int id;
+	int err;
+
+	regcache_cache_bypass(aw8898->regmap, true);
+	err = regmap_read(aw8898->regmap, AW8898_ID, &id);
+	regcache_cache_bypass(aw8898->regmap, false);
+
+	dev_info(&aw8898->client->dev, "LIVE[%s]: err=%d id=0x%x\n",
+		 where, err, id);
+}
+
 static void aw8898_update_dev_mode(struct aw8898 *aw8898)
 {
 	unsigned int mode = AW8898_SYSCTRL_SPK_MODE;
@@ -126,13 +146,20 @@ static void aw8898_update_dev_mode(struct aw8898 *aw8898)
 static void aw8898_cfg_write(struct aw8898 *aw8898,
 			      struct aw8898_cfg *aw8898_cfg)
 {
+	aw8898_live_id(aw8898, "cfg_write-entry");
+
 	for (int i = 0; i < aw8898_cfg->len; i++) {
 		unsigned int addr = __le32_to_cpu(aw8898_cfg->data[i].addr);
 		unsigned int val = __le32_to_cpu(aw8898_cfg->data[i].val);
+		int err;
 
-		dev_dbg(&aw8898->client->dev, "cfg reg = 0x%04x, val = 0x%04x\n", addr, val);
-		regmap_write(aw8898->regmap, addr, val);
+		err = regmap_write(aw8898->regmap, addr, val);
+		dev_info(&aw8898->client->dev,
+			 "EXP: cfg[%d] reg 0x%04x = 0x%04x -> %d\n",
+			 i, addr, val, err);
 	}
+
+	aw8898_live_id(aw8898, "cfg_write-exit");
 }
 
 static void aw8898_fw_loaded(const struct firmware *fw, void *context)
@@ -145,7 +172,8 @@ static void aw8898_fw_loaded(const struct firmware *fw, void *context)
 		return;
 	}
 
-	dev_dbg(&aw8898->client->dev, "Loaded %s - size: %zu\n", AW8898_CFG_NAME, fw->size);
+	dev_info(&aw8898->client->dev, "EXP: loaded %s - size: %zu\n",
+		 AW8898_CFG_NAME, fw->size);
 
 	if (fw->size % 4 != 0) {
 		dev_err(&aw8898->client->dev, "Invalid firmware size %zu\n", fw->size);
@@ -259,6 +287,9 @@ static int aw8898_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = dai->component;
 	struct aw8898 *aw8898 = snd_soc_component_get_drvdata(dai->component);
 	unsigned int val;
+	int err;
+
+	aw8898_live_id(aw8898, "hw_params-entry");
 
 	switch (params_rate(params)) {
 	case 8000:
@@ -282,9 +313,11 @@ static int aw8898_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	regmap_update_bits(aw8898->regmap, AW8898_I2SCTRL,
-			   AW8898_I2SCTRL_SR_MASK,
-			   FIELD_PREP(AW8898_I2SCTRL_SR_MASK, val));
+	err = regmap_update_bits(aw8898->regmap, AW8898_I2SCTRL,
+				 AW8898_I2SCTRL_SR_MASK,
+				 FIELD_PREP(AW8898_I2SCTRL_SR_MASK, val));
+	dev_info(component->dev, "EXP: I2SCTRL sample-rate write -> %d\n", err);
+	aw8898_live_id(aw8898, "hw_params-after-sr");
 
 	switch (params_width(params)) {
 	case 16:
@@ -305,9 +338,11 @@ static int aw8898_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	regmap_update_bits(aw8898->regmap, AW8898_I2SCTRL,
-			   AW8898_I2SCTRL_FMS_MASK,
-			   FIELD_PREP(AW8898_I2SCTRL_FMS_MASK, val));
+	err = regmap_update_bits(aw8898->regmap, AW8898_I2SCTRL,
+				 AW8898_I2SCTRL_FMS_MASK,
+				 FIELD_PREP(AW8898_I2SCTRL_FMS_MASK, val));
+	dev_info(component->dev, "EXP: I2SCTRL frame-size write -> %d\n", err);
+	aw8898_live_id(aw8898, "hw_params-exit");
 
 	return 0;
 }
@@ -316,6 +351,8 @@ static int aw8898_mute(struct snd_soc_dai *dai, int mute, int stream)
 {
 	struct aw8898 *aw8898 = snd_soc_component_get_drvdata(dai->component);
 	unsigned int val = AW8898_PWMCTRL_HMUTE_DISABLE;
+
+	aw8898_live_id(aw8898, mute ? "mute-entry" : "unmute-entry");
 
 	if (mute)
 		val = AW8898_PWMCTRL_HMUTE_ENABLE;
@@ -350,6 +387,8 @@ static int aw8898_prepare(struct snd_pcm_substream *substream,
 	 * on its own, and refusing the stream guarantees silence where the
 	 * hardware would merely have started slightly late.
 	 */
+	aw8898_live_id(aw8898, "prepare-entry");
+
 	err = regmap_read_poll_timeout(aw8898->regmap, AW8898_SYSST,
 				       val, val & AW8898_SYSST_PLLS,
 				       2000, 1 * USEC_PER_SEC);
@@ -413,7 +452,9 @@ static int aw8898_drv_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
+		aw8898_live_id(aw8898, "pre_pmu-entry");
 		aw8898_set_power(aw8898, true);
+		aw8898_live_id(aw8898, "pre_pmu-after-set-power");
 
 		if (!aw8898->cfg_loaded)
 			aw8898_cold_start(aw8898);
@@ -421,6 +462,7 @@ static int aw8898_drv_event(struct snd_soc_dapm_widget *w,
 		ret = 0;
 		break;
 	case SND_SOC_DAPM_POST_PMD:
+		aw8898_live_id(aw8898, "post_pmd-entry");
 		aw8898_set_power(aw8898, false);
 		ret = 0;
 		break;
