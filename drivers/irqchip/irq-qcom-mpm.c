@@ -294,21 +294,22 @@ static irqreturn_t qcom_mpm_handler(int irq, void *dev_id)
 	return ret;
 }
 
-/* The RPM is not asked to keep the AP down for longer than this. */
-#define MPM_MAX_SLEEP_NS	(NSEC_PER_SEC)
-
 /*
  * The two words in front of the register block hold the timestamp, in
  * architected timer ticks, at which the RPM has to bring the application
  * processor back up. Program it from the next timer event before handing
  * the vMPM over, otherwise the RPM has no wakeup deadline to honour.
  *
+ * An all-ones deadline means "no scheduled wakeup, bring me back only on a
+ * monitored interrupt". That is the vendor driver's own encoding for a system
+ * with no armed broadcast timer, so the RPM is known to accept it, and it is
+ * what tick_nohz_get_next_hrtimer() returning KTIME_MAX means here.
+ *
  * The current time comes from ktime_get_mono_fast_ns() rather than ktime_get():
  * this runs from the domain's ->power_off callback, which on suspend-to-idle is
  * reached after timekeeping_suspend(), where ktime_get() is not allowed to be
  * called and says so with a WARN. The fast accessor is the one that stays
- * usable across that window; it may lag by the length of the window, which the
- * clamp below already bounds.
+ * usable across that window.
  */
 static void mpm_write_wakeup(struct qcom_mpm_priv *priv)
 {
@@ -316,14 +317,17 @@ static void mpm_write_wakeup(struct qcom_mpm_priv *priv)
 	u64 ticks;
 	s64 delta;
 
-	delta = ktime_to_ns(next) - ktime_get_mono_fast_ns();
-	if (delta < 0)
-		delta = 0;
-	else if (delta > MPM_MAX_SLEEP_NS)
-		delta = MPM_MAX_SLEEP_NS;
+	if (next == KTIME_MAX) {
+		ticks = ~0ULL;
+	} else {
+		delta = ktime_to_ns(next) - ktime_get_mono_fast_ns();
+		if (delta < 0)
+			delta = 0;
 
-	ticks = arch_timer_read_counter() +
-		mul_u64_u32_div(delta, arch_timer_get_cntfrq(), NSEC_PER_SEC);
+		ticks = arch_timer_read_counter() +
+			mul_u64_u32_div(delta, arch_timer_get_cntfrq(),
+					NSEC_PER_SEC);
+	}
 
 	writel_relaxed(lower_32_bits(ticks), priv->base);
 	writel_relaxed(upper_32_bits(ticks), priv->base + 4);
