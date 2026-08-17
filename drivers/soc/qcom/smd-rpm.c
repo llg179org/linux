@@ -14,6 +14,9 @@
 #include <linux/rpmsg.h>
 #include <linux/soc/qcom/smd-rpm.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/qcom_smd_rpm.h>
+
 #define RPM_REQUEST_TIMEOUT     (5 * HZ)
 
 /**
@@ -110,6 +113,8 @@ int qcom_rpm_smd_write(struct qcom_smd_rpm *rpm,
 	/* SMD packets to the RPM may not exceed 256 bytes */
 	if (WARN_ON(size >= 256))
 		return -EINVAL;
+
+	trace_qcom_rpm_smd_write(state, type, id, buf, count);
 
 	pkt = kmalloc(size, GFP_ATOMIC);
 	if (!pkt)
