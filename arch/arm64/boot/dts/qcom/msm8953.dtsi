@@ -281,7 +281,7 @@
 			system_pc: domain-system-power-collapse {
 				compatible = "domain-idle-state";
 				idle-state-name = "system-pc";
-				arm,psci-suspend-param = <0x41000353>;
+				arm,psci-suspend-param = <0x42000353>;
 				entry-latency-us = <1495>;
 				exit-latency-us = <11027>;
 				min-residency-us = <13000>;
