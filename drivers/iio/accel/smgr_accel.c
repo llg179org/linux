@@ -205,6 +205,8 @@ static int smgr_accel_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	platform_set_drvdata(pdev, iio_dev);
+
 	ret = devm_iio_device_register(&pdev->dev, iio_dev);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to register IIO device: %pe\n",
