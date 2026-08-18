@@ -187,6 +187,41 @@ struct rpm_smd_clk_desc {
 
 static DEFINE_MUTEX(rpm_smd_clk_lock);
 
+/*
+ * EXPERIMENT, not a fix. Do not send this upstream and do not leave it on by
+ * default.
+ *
+ * The RPM never enters its vlow record - the state in which it turns the
+ * crystal off - and APSS "XO shutdown count" has been zero for every boot,
+ * while the modem, wifi and audio DSP shut XO down thousands of times each.
+ * The suspicion is that the application processor holds a SLEEP-set vote for
+ * XO that it never releases, in which case no amount of processor-side power
+ * management can reach vlow.
+ *
+ * Two places would produce exactly that, and neither depends on a consumer:
+ * clk_smd_rpm_handoff() writes 1 into the sleep set for every clock at probe,
+ * before anything has asked for it, and to_active_sleep() mirrors the active
+ * rate into the sleep set for any clock that is not marked active_only.
+ *
+ * With xo_sleep_off=1 the sleep-set vote for bi_tcxo is forced to zero in both.
+ * The measurement it exists for is a single reading of
+ * /sys/kernel/debug/qcom_stats/vlow after a suspend: if that still says zero,
+ * the XO vote was never the blocker and this whole line of enquiry is closed.
+ *
+ * ☠️ It may well break resume - a wakeup then has to come from the always-on
+ * MPM timer rather than anything clocked by XO. Boot is unaffected either way,
+ * so the recovery is to boot and set the parameter back, not to reflash.
+ */
+static bool xo_sleep_off;
+module_param(xo_sleep_off, bool, 0444);
+MODULE_PARM_DESC(xo_sleep_off,
+		 "experiment: vote zero for XO in the RPM sleep set");
+
+static bool clk_smd_rpm_is_xo(const struct clk_smd_rpm *r)
+{
+	return r->rpm_res_type == QCOM_SMD_RPM_MISC_CLK && r->rpm_clk_id == 0;
+}
+
 static int clk_smd_rpm_handoff(const struct clk_smd_rpm *r)
 {
 	int ret;
@@ -201,6 +236,10 @@ static int clk_smd_rpm_handoff(const struct clk_smd_rpm *r)
 				 sizeof(req));
 	if (ret)
 		return ret;
+
+	if (xo_sleep_off && clk_smd_rpm_is_xo(r))
+		req.value = 0;
+
 	ret = qcom_rpm_smd_write(rpmcc_smd_rpm, QCOM_SMD_RPM_SLEEP_STATE,
 				 r->rpm_res_type, r->rpm_clk_id, &req,
 				 sizeof(req));
@@ -247,7 +286,7 @@ static void to_active_sleep(struct clk_smd_rpm *r, unsigned long rate,
 	 * Active-only clocks don't care what the rate is during sleep. So,
 	 * they vote for zero.
 	 */
-	if (r->active_only)
+	if (r->active_only || (xo_sleep_off && clk_smd_rpm_is_xo(r)))
 		*sleep = 0;
 	else
 		*sleep = *active;
