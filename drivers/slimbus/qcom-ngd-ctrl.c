@@ -1131,7 +1131,7 @@ static int qcom_slim_ngd_disable_stream(struct slim_stream_runtime *rt)
 	if (ret) {
 		slim_free_txn_tid(ctrl, &txn);
 		dev_err(&sdev->dev, "TX timed out:MC:0x%x,mt:0x%x", txn.mc,
-				txn.mt);
+			txn.mt);
 		return ret;
 	}
 
@@ -1151,7 +1151,7 @@ static int qcom_slim_ngd_disable_stream(struct slim_stream_runtime *rt)
 	if (ret) {
 		slim_free_txn_tid(ctrl, &txn);
 		dev_err(&sdev->dev, "TX timed out:MC:0x%x,mt:0x%x", txn.mc,
-				txn.mt);
+			txn.mt);
 	}
 
 	return ret;
