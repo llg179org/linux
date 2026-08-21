@@ -18,6 +18,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
@@ -1967,6 +1968,7 @@ static int qup_i2c_pm_suspend_runtime(struct device *device)
 
 	dev_dbg(device, "pm_runtime: suspending...\n");
 	qup_i2c_disable_clocks(qup);
+	pinctrl_pm_select_sleep_state(device);
 	return 0;
 }
 
@@ -1975,6 +1977,17 @@ static int qup_i2c_pm_resume_runtime(struct device *device)
 	struct qup_i2c_dev *qup = dev_get_drvdata(device);
 
 	dev_dbg(device, "pm_runtime: resuming...\n");
+	/*
+	 * Firmware on a co-processor can reset the pad configuration
+	 * behind Linux's back: measured on the Fairphone 3 (MSM8953),
+	 * the ADSP resets the BLSP6 I2C pads to TLMM power-on defaults
+	 * ~8 s after the modem comes up, which permanently knocks every
+	 * device off that bus.  Cycling through the sleep state above
+	 * makes this select actually rewrite the registers (the pinctrl
+	 * core short-circuits a same-state select), so each resume
+	 * restores the pads.
+	 */
+	pinctrl_pm_select_default_state(device);
 	qup_i2c_enable_clocks(qup);
 	return 0;
 }
