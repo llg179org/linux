@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/clk-provider.h>
 #include <linux/clk.h>
+#include <linux/cpu.h>
+#include <linux/cpumask.h>
 #include <linux/interconnect-clk.h>
 #include <linux/interconnect-provider.h>
 #include <linux/kernel.h>
@@ -8,7 +10,9 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
+#include <linux/pm_qos.h>
 #include <linux/regmap.h>
+#include <linux/smp.h>
 
 #include <dt-bindings/clock/qcom,apcs-msm8953.h>
 
@@ -162,11 +166,15 @@ static const u32 apcs_mux_parent_map[] = {
 	 */
 };
 
+#define APCS_CPUS_PER_CLUSTER	4
+
 struct apcs_md_clk {
 	struct clk_regmap_mux_div md;
 	struct notifier_block pll_nb;
 	struct clk_notifier_data pll_change;
 	unsigned int apcs_pll_fixed_factor;
+	struct cpumask cluster_cpus;
+	struct dev_pm_qos_request qos_req[APCS_CPUS_PER_CLUSTER];
 };
 
 #define to_apcs_md(_hw) container_of(_hw, struct apcs_md_clk, md.clkr.hw)
@@ -191,6 +199,37 @@ static int apcs_msm8953_determine_rate(struct clk_hw *hw,
 	return 0;
 }
 
+static void apcs_do_nothing(void *unused)
+{
+}
+
+/*
+ * The CPU PLLs are reprogrammed on the fly (SUPPORTS_DYNAMIC_UPDATE), and
+ * the reprogramming usually runs on a CPU of the *other* cluster.  If the
+ * owning cluster power-collapses while the new L value is being latched,
+ * the SPM gates the PLL and the lock-detect poll in
+ * alpha_pll_huayra_set_rate() times out.  Keep the cluster's CPUs out of
+ * power collapse for the duration of the rate change: pin their resume
+ * latency to zero (which limits them to WFI) and kick one of them so a
+ * cluster that is already collapsed wakes up before the PLL is touched.
+ */
+static void apcs_hold_cluster(struct apcs_md_clk *apclk, bool hold)
+{
+	s32 lat = hold ? 0 : PM_QOS_RESUME_LATENCY_NO_CONSTRAINT;
+	int i;
+
+	if (cpumask_empty(&apclk->cluster_cpus))
+		return;
+
+	for (i = 0; i < APCS_CPUS_PER_CLUSTER; i++)
+		if (dev_pm_qos_request_active(&apclk->qos_req[i]))
+			dev_pm_qos_update_request(&apclk->qos_req[i], lat);
+
+	if (hold)
+		smp_call_function_any(&apclk->cluster_cpus, apcs_do_nothing,
+				      NULL, 1);
+}
+
 static int apcs_pll_notifier(struct notifier_block *nb, unsigned long action,
 			     void *data)
 {
@@ -200,6 +239,8 @@ static int apcs_pll_notifier(struct notifier_block *nb, unsigned long action,
 
 	if (action == PRE_RATE_CHANGE && data)
 		apclk->pll_change = ((struct clk_notifier_data *) data)[0];
+
+	apcs_hold_cluster(apclk, action == PRE_RATE_CHANGE);
 
 	return NOTIFY_OK;
 }
@@ -229,6 +270,41 @@ static int apcs_mux_div_notifier(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
+static void apcs_remove_cluster_qos(void *data)
+{
+	struct apcs_md_clk *apclk = data;
+	int i;
+
+	for (i = 0; i < APCS_CPUS_PER_CLUSTER; i++)
+		if (dev_pm_qos_request_active(&apclk->qos_req[i]))
+			dev_pm_qos_remove_request(&apclk->qos_req[i]);
+}
+
+static int apcs_add_cluster_qos(struct device *dev, struct apcs_md_clk *apclk,
+				int first_cpu)
+{
+	int i, ret;
+
+	for (i = 0; i < APCS_CPUS_PER_CLUSTER; i++) {
+		struct device *cpu_dev = get_cpu_device(first_cpu + i);
+
+		if (!cpu_dev)
+			continue;
+
+		ret = dev_pm_qos_add_request(cpu_dev, &apclk->qos_req[i],
+					     DEV_PM_QOS_RESUME_LATENCY,
+					     PM_QOS_RESUME_LATENCY_NO_CONSTRAINT);
+		if (ret < 0) {
+			apcs_remove_cluster_qos(apclk);
+			return ret;
+		}
+
+		cpumask_set_cpu(first_cpu + i, &apclk->cluster_cpus);
+	}
+
+	return devm_add_action_or_reset(dev, apcs_remove_cluster_qos, apclk);
+}
+
 static int apcs_register_mux_div(struct device *dev, int id, struct clk_hw **hws,
 				     struct regmap *rmap)
 {
@@ -236,7 +312,7 @@ static int apcs_register_mux_div(struct device *dev, int id, struct clk_hw **hws
 	struct clk_init_data init = {0};
 	struct clk_regmap_mux_div *md;
 	struct apcs_md_clk *apclk;
-	int ret, pll_id;
+	int ret, pll_id, first_cpu = -1;
 
 	apclk = devm_kzalloc(dev, sizeof(*apclk), GFP_KERNEL);
 	if (!apclk)
@@ -263,16 +339,24 @@ static int apcs_register_mux_div(struct device *dev, int id, struct clk_hw **hws
 	case APCS_CPU0_CLK_SRC:
 		init.name = "apcs-cpu0-clk-src";
 		pll_id = APCS_CPU0_PLL;
+		first_cpu = 0;
 		break;
 	case APCS_CPU4_CLK_SRC:
 		init.name = "apcs-cpu4-clk-src";
 		pll_id = APCS_CPU4_PLL;
+		first_cpu = 4;
 		break;
 	case APCS_CCI_CLK_SRC:
 		init.name = "apcs-cci-clk-src";
 		pll_id = APCS_CCI_PLL;
 		apclk->apcs_pll_fixed_factor = apcs_is_sdm632 ? 0 : 5;
 		break;
+	}
+
+	if (first_cpu >= 0) {
+		ret = apcs_add_cluster_qos(dev, apclk, first_cpu);
+		if (ret)
+			return ret;
 	}
 
 	ret = apcs_register_pll(dev, pll_id, hws);
