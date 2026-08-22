@@ -159,6 +159,52 @@ static int rpm_reg_set_load(struct regulator_dev *rdev, int load_uA)
 	return ret;
 }
 
+/*
+ * The RPM applies the sleep set while the last subsystem sleeps; a resource
+ * with no sleep-set vote inherits its active vote, so every regulator here
+ * stays at its active level for as long as the boot lives.  These ops cast
+ * the missing sleep-set vote.  They only run for regulators whose constraints
+ * carry a regulator-state-mem node, so boards that do not opt in are
+ * unaffected.
+ */
+static int rpm_reg_write_sleep(struct qcom_rpm_reg *vreg, u32 enable,
+			       int uV)
+{
+	struct rpm_regulator_req req[2];
+	int reqlen = 0;
+
+	req[reqlen].key = cpu_to_le32(RPM_KEY_SWEN);
+	req[reqlen].nbytes = cpu_to_le32(sizeof(u32));
+	req[reqlen].value = cpu_to_le32(enable);
+	reqlen++;
+
+	if (uV > 0) {
+		req[reqlen].key = cpu_to_le32(RPM_KEY_UV);
+		req[reqlen].nbytes = cpu_to_le32(sizeof(u32));
+		req[reqlen].value = cpu_to_le32(uV);
+		reqlen++;
+	}
+
+	return qcom_rpm_smd_write(smd_vreg_rpm, QCOM_SMD_RPM_SLEEP_STATE,
+				  vreg->type, vreg->id,
+				  req, sizeof(req[0]) * reqlen);
+}
+
+static int rpm_reg_set_suspend_enable(struct regulator_dev *rdev)
+{
+	return rpm_reg_write_sleep(rdev_get_drvdata(rdev), 1, 0);
+}
+
+static int rpm_reg_set_suspend_disable(struct regulator_dev *rdev)
+{
+	return rpm_reg_write_sleep(rdev_get_drvdata(rdev), 0, 0);
+}
+
+static int rpm_reg_set_suspend_voltage(struct regulator_dev *rdev, int uV)
+{
+	return rpm_reg_write_sleep(rdev_get_drvdata(rdev), 1, uV);
+}
+
 static const struct regulator_ops rpm_smps_ldo_ops = {
 	.enable = rpm_reg_enable,
 	.disable = rpm_reg_disable,
@@ -169,6 +215,10 @@ static const struct regulator_ops rpm_smps_ldo_ops = {
 	.set_voltage = rpm_reg_set_voltage,
 
 	.set_load = rpm_reg_set_load,
+
+	.set_suspend_enable = rpm_reg_set_suspend_enable,
+	.set_suspend_disable = rpm_reg_set_suspend_disable,
+	.set_suspend_voltage = rpm_reg_set_suspend_voltage,
 };
 
 static const struct regulator_ops rpm_smps_ldo_ops_fixed = {
@@ -180,12 +230,19 @@ static const struct regulator_ops rpm_smps_ldo_ops_fixed = {
 	.set_voltage = rpm_reg_set_voltage,
 
 	.set_load = rpm_reg_set_load,
+
+	.set_suspend_enable = rpm_reg_set_suspend_enable,
+	.set_suspend_disable = rpm_reg_set_suspend_disable,
+	.set_suspend_voltage = rpm_reg_set_suspend_voltage,
 };
 
 static const struct regulator_ops rpm_switch_ops = {
 	.enable = rpm_reg_enable,
 	.disable = rpm_reg_disable,
 	.is_enabled = rpm_reg_is_enabled,
+
+	.set_suspend_enable = rpm_reg_set_suspend_enable,
+	.set_suspend_disable = rpm_reg_set_suspend_disable,
 };
 
 static const struct regulator_ops rpm_bob_ops = {
@@ -195,6 +252,10 @@ static const struct regulator_ops rpm_bob_ops = {
 
 	.get_voltage = rpm_reg_get_voltage,
 	.set_voltage = rpm_reg_set_voltage,
+
+	.set_suspend_enable = rpm_reg_set_suspend_enable,
+	.set_suspend_disable = rpm_reg_set_suspend_disable,
+	.set_suspend_voltage = rpm_reg_set_suspend_voltage,
 };
 
 static const struct regulator_ops rpm_mp5496_ops = {
