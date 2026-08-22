@@ -39,6 +39,20 @@ struct rpm_regulator_req {
 #define RPM_KEY_UV	0x00007675 /* "uv" */
 #define RPM_KEY_MA	0x0000616d /* "ma" */
 
+/*
+ * Downstream casts every regulator request into BOTH RPM sets (qcom,set = <3>
+ * on all 23 rails of the reference tree) so the sleep set is fully specified;
+ * mainline writes the active set only, leaving the sleep set empty, which the
+ * RPM treats as "inherit active" - measured on the Fairphone 3 as one of the
+ * two blockers keeping the SoC out of its vlow sleep state.  both_sets=1
+ * mirrors each active-set write into the sleep set, reproducing the
+ * downstream shape.  Experiment knob, boot-time only.
+ */
+static bool both_sets;
+module_param(both_sets, bool, 0444);
+MODULE_PARM_DESC(both_sets,
+		 "Mirror every active-set regulator request into the RPM sleep set");
+
 static int rpm_reg_write_active(struct qcom_rpm_reg *vreg)
 {
 	struct rpm_regulator_req req[3];
@@ -72,6 +86,10 @@ static int rpm_reg_write_active(struct qcom_rpm_reg *vreg)
 	ret = qcom_rpm_smd_write(smd_vreg_rpm, QCOM_SMD_RPM_ACTIVE_STATE,
 				 vreg->type, vreg->id,
 				 req, sizeof(req[0]) * reqlen);
+	if (!ret && both_sets)
+		ret = qcom_rpm_smd_write(smd_vreg_rpm, QCOM_SMD_RPM_SLEEP_STATE,
+					 vreg->type, vreg->id,
+					 req, sizeof(req[0]) * reqlen);
 	if (!ret) {
 		vreg->enabled_updated = 0;
 		vreg->uv_updated = 0;
