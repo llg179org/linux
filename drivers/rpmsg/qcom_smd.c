@@ -1561,6 +1561,15 @@ void qcom_smd_unregister_edge(struct qcom_smd_edge *edge)
 	cancel_work_sync(&edge->scan_work);
 	cancel_work_sync(&edge->state_work);
 
+	/*
+	 * An armed wakeup source owns a device of its own, parented to the
+	 * edge.  Drop it before walking the children below, which unregisters
+	 * every child as if it were an smd channel and would otherwise leave
+	 * the wakeup source's device to be unregistered a second time when
+	 * the edge itself goes away.
+	 */
+	device_wakeup_disable(&edge->dev);
+
 	ret = device_for_each_child(&edge->dev, NULL, qcom_smd_remove_device);
 	if (ret)
 		dev_warn(&edge->dev, "can't remove smd device: %d\n", ret);
