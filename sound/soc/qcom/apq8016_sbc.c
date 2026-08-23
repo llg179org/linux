@@ -33,7 +33,6 @@ struct apq8016_sbc_data {
 	struct snd_soc_jack jack;
 	bool jack_setup;
 	bool use_ibit_clk;
-	bool slim_port_setup;
 	int mi2s_clk_count[MI2S_COUNT];
 };
 
@@ -330,8 +329,6 @@ static void msm8916_qdsp6_add_ops(struct snd_soc_card *card)
  */
 static int msm8953_slim_dai_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_card *card = rtd->card;
-	struct apq8016_sbc_data *pdata = snd_soc_card_get_drvdata(card);
 	struct snd_soc_dai *codec_dai;
 	unsigned int rx_ch[SLIM_MAX_RX_PORTS] = {144, 145, 146, 147, 148, 149,
 					150, 151, 152, 153, 154, 155, 156};
@@ -340,10 +337,14 @@ static int msm8953_slim_dai_init(struct snd_soc_pcm_runtime *rtd)
 					140, 141, 142, 143};
 	int ret, i;
 
-	/* setting up the codec multiple times for slim ports is redundant */
-	if (pdata->slim_port_setup)
-		return 0;
-
+	/*
+	 * Repeating this for every SLIMbus link is redundant but harmless:
+	 * both calls below are idempotent. It must not be latched, because
+	 * the state it programs lives in the codec, not in the card, and a
+	 * codec that re-probes (after a SLIMbus subsystem restart, say) comes
+	 * back with no channel map at all. A card-lifetime flag would keep
+	 * dai_init from ever putting it back.
+	 */
 	for_each_rtd_codec_dais(rtd, i, codec_dai) {
 		ret = snd_soc_dai_set_channel_map(codec_dai,
 						  ARRAY_SIZE(tx_ch), tx_ch,
@@ -355,7 +356,6 @@ static int msm8953_slim_dai_init(struct snd_soc_pcm_runtime *rtd)
 				       SNDRV_PCM_STREAM_PLAYBACK);
 	}
 
-	pdata->slim_port_setup = true;
 	return 0;
 }
 
