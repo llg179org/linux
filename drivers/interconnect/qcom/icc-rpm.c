@@ -204,6 +204,12 @@ static int qcom_icc_qos_set(struct icc_node *node)
 	}
 }
 
+/* See the comment at the probe-time sleep-set write below. */
+static bool sleep_init;
+module_param(sleep_init, bool, 0444);
+MODULE_PARM_DESC(sleep_init,
+		 "Write an explicit sleep-set zero for every RPM-owned node at probe");
+
 static int qcom_icc_rpm_set(struct qcom_icc_node *qn, u64 *bw, u64 *applied_bw, bool ignore_enxio)
 {
 	int ret, rpm_ctx = 0;
@@ -628,6 +634,26 @@ regmap_done:
 
 		for (j = 0; j < qnodes[i]->num_links; j++)
 			icc_link_create(node, qnodes[i]->links[j]);
+
+		/*
+		 * A node whose consumers all vote with the active-only tag
+		 * keeps a sleep-set bandwidth of zero, and qcom_icc_rpm_set()
+		 * elides writes whose value has not changed - so such a
+		 * node's sleep-set vote is never written at all.  Whether the
+		 * RPM treats a never-written resource as zero or as
+		 * inherit-active is exactly what this knob measures: send one
+		 * explicit sleep-set zero for every RPM-owned node at probe.
+		 */
+		if (sleep_init && !qnodes[i]->qos.ap_owned) {
+			if (qnodes[i]->mas_rpm_id != -1)
+				qcom_icc_rpm_smd_send(QCOM_SMD_RPM_SLEEP_STATE,
+						      RPM_BUS_MASTER_REQ,
+						      qnodes[i]->mas_rpm_id, 0);
+			if (qnodes[i]->slv_rpm_id != -1)
+				qcom_icc_rpm_smd_send(QCOM_SMD_RPM_SLEEP_STATE,
+						      RPM_BUS_SLAVE_REQ,
+						      qnodes[i]->slv_rpm_id, 0);
+		}
 
 		/* Set QoS registers (we only need to do it once, generally) */
 		if (qnodes[i]->qos.ap_owned &&
