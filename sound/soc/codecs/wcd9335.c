@@ -5182,9 +5182,9 @@ static int wcd9335_probe(struct wcd9335_codec *wcd)
 
 	wcd->sido_voltage = SIDO_VOLTAGE_NOMINAL_MV;
 
-	return devm_snd_soc_register_component(dev, &wcd9335_component_drv,
-					       wcd9335_slim_dais,
-					       ARRAY_SIZE(wcd9335_slim_dais));
+	return snd_soc_register_component(dev, &wcd9335_component_drv,
+					  wcd9335_slim_dais,
+					  ARRAY_SIZE(wcd9335_slim_dais));
 }
 
 static const struct regmap_range_cfg wcd9335_ranges[] = {
@@ -5461,9 +5461,9 @@ static int wcd9335_irq_init(struct wcd9335_codec *wcd)
 		return dev_err_probe(wcd->dev, wcd->intr1,
 				     "Unable to configure IRQ\n");
 
-	ret = devm_regmap_add_irq_chip(wcd->dev, wcd->regmap, wcd->intr1,
-				 IRQF_TRIGGER_HIGH, 0,
-				 &wcd9335_regmap_irq1_chip, &wcd->irq_data);
+	ret = regmap_add_irq_chip(wcd->regmap, wcd->intr1,
+				  IRQF_TRIGGER_HIGH, 0,
+				  &wcd9335_regmap_irq1_chip, &wcd->irq_data);
 	if (ret)
 		return dev_err_probe(wcd->dev, ret, "Failed to register IRQ chip\n");
 
@@ -5494,8 +5494,23 @@ static int wcd9335_slim_probe(struct slim_device *slim)
 	return 0;
 }
 
-static int wcd9335_slim_status(struct slim_device *sdev,
-			       enum slim_device_status status)
+static void wcd9335_slim_status_down(struct wcd9335_codec *wcd)
+{
+	if (!wcd->regmap)
+		return;
+
+	snd_soc_unregister_component(wcd->dev);
+	regmap_del_irq_chip(wcd->intr1, wcd->irq_data);
+	wcd->irq_data = NULL;
+	regmap_exit(wcd->if_regmap);
+	wcd->if_regmap = NULL;
+	regmap_exit(wcd->regmap);
+	wcd->regmap = NULL;
+	put_device(&wcd->slim_ifc_dev->dev);
+	wcd->slim_ifc_dev = NULL;
+}
+
+static int wcd9335_slim_status_up(struct slim_device *sdev)
 {
 	struct device *dev = &sdev->dev;
 	struct device_node *ifc_dev_np;
@@ -5521,29 +5536,80 @@ static int wcd9335_slim_status(struct slim_device *sdev,
 	slim_get_logical_addr(wcd->slim_ifc_dev);
 
 	wcd->regmap = regmap_init_slimbus(sdev, &wcd9335_regmap_config);
-	if (IS_ERR(wcd->regmap))
-		return dev_err_probe(dev, PTR_ERR(wcd->regmap),
-				     "Failed to allocate slim register map\n");
+	if (IS_ERR(wcd->regmap)) {
+		ret = dev_err_probe(dev, PTR_ERR(wcd->regmap),
+				    "Failed to allocate slim register map\n");
+		wcd->regmap = NULL;
+		goto err_put_ifc;
+	}
 
 	wcd->if_regmap = regmap_init_slimbus(wcd->slim_ifc_dev,
-						  &wcd9335_ifc_regmap_config);
-	if (IS_ERR(wcd->if_regmap))
-		return dev_err_probe(dev, PTR_ERR(wcd->if_regmap),
-				     "Failed to allocate ifc register map\n");
+					     &wcd9335_ifc_regmap_config);
+	if (IS_ERR(wcd->if_regmap)) {
+		ret = dev_err_probe(dev, PTR_ERR(wcd->if_regmap),
+				    "Failed to allocate ifc register map\n");
+		wcd->if_regmap = NULL;
+		goto err_regmap;
+	}
 
 	ret = wcd9335_bring_up(wcd);
 	if (ret) {
 		dev_err(dev, "Failed to bringup WCD9335\n");
-		return ret;
+		goto err_if_regmap;
 	}
 
 	ret = wcd9335_irq_init(wcd);
 	if (ret)
-		return ret;
+		goto err_if_regmap;
 
-	wcd9335_probe(wcd);
+	ret = wcd9335_probe(wcd);
+	if (ret)
+		goto err_irq;
 
 	return 0;
+
+err_irq:
+	regmap_del_irq_chip(wcd->intr1, wcd->irq_data);
+	wcd->irq_data = NULL;
+err_if_regmap:
+	regmap_exit(wcd->if_regmap);
+	wcd->if_regmap = NULL;
+err_regmap:
+	regmap_exit(wcd->regmap);
+	wcd->regmap = NULL;
+err_put_ifc:
+	put_device(&wcd->slim_ifc_dev->dev);
+	wcd->slim_ifc_dev = NULL;
+
+	return ret;
+}
+
+/*
+ * The bus reports the codec absent before an ADSP subsystem restart and
+ * present again afterwards. Running the bring-up on the absent notification
+ * talks to a bus that is already down: the version read fails, a second pair
+ * of register maps is allocated and never freed, and the interrupt chip from
+ * the previous bring-up is left installed to retry its mask writes into the
+ * dead bus. Do the teardown on the way down and the bring-up only on the way
+ * up.
+ */
+static int wcd9335_slim_status(struct slim_device *sdev,
+			       enum slim_device_status status)
+{
+	switch (status) {
+	case SLIM_DEVICE_STATUS_UP:
+		return wcd9335_slim_status_up(sdev);
+	case SLIM_DEVICE_STATUS_DOWN:
+		wcd9335_slim_status_down(dev_get_drvdata(&sdev->dev));
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static void wcd9335_slim_remove(struct slim_device *sdev)
+{
+	wcd9335_slim_status_down(dev_get_drvdata(&sdev->dev));
 }
 
 static const struct slim_device_id wcd9335_slim_id[] = {
@@ -5557,6 +5623,7 @@ static struct slim_driver wcd9335_slim_driver = {
 		.name = "wcd9335-slim",
 	},
 	.probe = wcd9335_slim_probe,
+	.remove = wcd9335_slim_remove,
 	.device_status = wcd9335_slim_status,
 	.id_table = wcd9335_slim_id,
 };
