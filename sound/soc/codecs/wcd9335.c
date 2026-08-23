@@ -5153,9 +5153,22 @@ static const struct snd_soc_component_driver wcd9335_component_drv = {
 static int wcd9335_probe(struct wcd9335_codec *wcd)
 {
 	struct device *dev = wcd->dev;
+	int i;
 
 	memcpy(wcd->rx_chs, wcd9335_rx_chs, sizeof(wcd9335_rx_chs));
 	memcpy(wcd->tx_chs, wcd9335_tx_chs, sizeof(wcd9335_tx_chs));
+
+	/*
+	 * The channel lists are walked by the mixer put handlers, which can
+	 * run before any DAI has had its channel map set. Initialise the list
+	 * heads here so that a control write on a codec that never reached
+	 * wcd9335_set_channel_map() unlinks an empty list instead of following
+	 * a NULL pointer.
+	 */
+	for (i = 0; i < ARRAY_SIZE(wcd->rx_chs); i++)
+		INIT_LIST_HEAD(&wcd->rx_chs[i].list);
+	for (i = 0; i < ARRAY_SIZE(wcd->tx_chs); i++)
+		INIT_LIST_HEAD(&wcd->tx_chs[i].list);
 
 	/*
 	 * Legacy detection never compares a measured voltage, so the
