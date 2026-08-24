@@ -210,6 +210,33 @@ module_param(sleep_init, bool, 0444);
 MODULE_PARM_DESC(sleep_init,
 		 "Write an explicit sleep-set zero for every RPM-owned node at probe");
 
+/*
+ * experiment (sleep_bw_off): the measured mainline sleep set pins the backbone
+ * in the sleep context — bimc/pcnoc/snoc clock rates and the bmas/bslv bandwidth
+ * stay at their active idle values across a real suspend, because the icc
+ * sleep-context aggregate keeps TAG_ALWAYS bandwidth and nothing lowers it at
+ * suspend. The RPM cannot collapse the backbone (enter vlow/vmin) while that
+ * vote stands, which is why clk_smd_rpm.xo_sleep_off=1 alone never moved vlow.
+ *
+ * A blunt "always vote zero for the sleep set" (tried first) boot-loops: the RPM
+ * applies the sleep set during ordinary idle windows too, so it collapses the
+ * backbone under the still-on display and corrupts it. The correct scope is the
+ * suspend sequence itself: qcom_icc_rpm_suspend_late() rewrites every RPM-owned
+ * node's sleep-set bandwidth (and the bus clock sleep rate) to zero, and
+ * qcom_icc_rpm_resume_early() restores it. suspend_late runs after dpm_suspend
+ * has already suspended the display and other consumers (so nothing on-screen is
+ * starved) and with IRQs still enabled (so the RPM ack path works), and it fires
+ * on this SoC's s2idle path. This mirrors downstream's flush-at-power-collapse.
+ * Set together with xo_sleep_off=1 and read /sys/kernel/debug/qcom_stats/vlow
+ * after an rtcwake -m mem suspend. ☠️ May wedge resume (a wakeup path may need
+ * the backbone clocked); recovery is a reboot — the hook only acts on suspend,
+ * so a fresh boot is clean. Keep on a non-default boot label anyway.
+ */
+static bool sleep_bw_off;
+module_param(sleep_bw_off, bool, 0444);
+MODULE_PARM_DESC(sleep_bw_off,
+		 "experiment: zero the RPM sleep-set bandwidth/rate for every RPM-owned NoC node across suspend");
+
 static int qcom_icc_rpm_set(struct qcom_icc_node *qn, u64 *bw, u64 *applied_bw, bool ignore_enxio)
 {
 	int ret, rpm_ctx = 0;
@@ -706,3 +733,79 @@ void qnoc_remove(struct platform_device *pdev)
 	clk_disable_unprepare(qp->bus_clk);
 }
 EXPORT_SYMBOL(qnoc_remove);
+
+/*
+ * experiment (sleep_bw_off): scope the backbone sleep-set zeroing to the actual
+ * suspend sequence. See the sleep_bw_off comment above for the why. suspend_late
+ * runs after every consumer (display included) has suspended and released its
+ * bandwidth, and with IRQs still enabled so the RPM ack path works; it fires on
+ * this SoC's s2idle path. We do NOT touch the app_sum_avg / bus_clk_rate caches,
+ * so resume restores from the live request state.
+ */
+static int qcom_icc_rpm_suspend_late(struct device *dev)
+{
+	struct qcom_icc_provider *qp = dev_get_drvdata(dev);
+	struct qcom_icc_node *qn;
+	struct icc_node *node;
+
+	if (!sleep_bw_off || !qp)
+		return 0;
+
+	list_for_each_entry(node, &qp->provider.nodes, node_list) {
+		qn = node->data;
+		if (qn->qos.ap_owned)
+			continue;
+		if (qn->mas_rpm_id != -1)
+			qcom_icc_rpm_smd_send(QCOM_SMD_RPM_SLEEP_STATE,
+					      RPM_BUS_MASTER_REQ, qn->mas_rpm_id, 0);
+		if (qn->slv_rpm_id != -1)
+			qcom_icc_rpm_smd_send(QCOM_SMD_RPM_SLEEP_STATE,
+					      RPM_BUS_SLAVE_REQ, qn->slv_rpm_id, 0);
+		if (qn->bus_clk_desc)
+			qcom_icc_rpm_set_bus_rate(qn->bus_clk_desc,
+						  QCOM_SMD_RPM_SLEEP_STATE, 0);
+	}
+	if (qp->bus_clk_desc)
+		qcom_icc_rpm_set_bus_rate(qp->bus_clk_desc,
+					  QCOM_SMD_RPM_SLEEP_STATE, 0);
+	return 0;
+}
+
+static int qcom_icc_rpm_resume_early(struct device *dev)
+{
+	struct qcom_icc_provider *qp = dev_get_drvdata(dev);
+	struct qcom_icc_node *qn;
+	struct icc_node *node;
+
+	if (!sleep_bw_off || !qp)
+		return 0;
+
+	list_for_each_entry(node, &qp->provider.nodes, node_list) {
+		qn = node->data;
+		if (qn->qos.ap_owned)
+			continue;
+		if (qn->mas_rpm_id != -1)
+			qcom_icc_rpm_smd_send(QCOM_SMD_RPM_SLEEP_STATE,
+					      RPM_BUS_MASTER_REQ, qn->mas_rpm_id,
+					      icc_units_to_bps(qn->sum_avg[QCOM_SMD_RPM_SLEEP_STATE]));
+		if (qn->slv_rpm_id != -1)
+			qcom_icc_rpm_smd_send(QCOM_SMD_RPM_SLEEP_STATE,
+					      RPM_BUS_SLAVE_REQ, qn->slv_rpm_id,
+					      icc_units_to_bps(qn->sum_avg[QCOM_SMD_RPM_SLEEP_STATE]));
+		if (qn->bus_clk_desc)
+			qcom_icc_rpm_set_bus_rate(qn->bus_clk_desc,
+						  QCOM_SMD_RPM_SLEEP_STATE,
+						  qn->bus_clk_rate[QCOM_SMD_RPM_SLEEP_STATE]);
+	}
+	if (qp->bus_clk_desc)
+		qcom_icc_rpm_set_bus_rate(qp->bus_clk_desc,
+					  QCOM_SMD_RPM_SLEEP_STATE,
+					  qp->bus_clk_rate[QCOM_SMD_RPM_SLEEP_STATE]);
+	return 0;
+}
+
+const struct dev_pm_ops qnoc_pm_ops = {
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(qcom_icc_rpm_suspend_late,
+				     qcom_icc_rpm_resume_early)
+};
+EXPORT_SYMBOL(qnoc_pm_ops);
