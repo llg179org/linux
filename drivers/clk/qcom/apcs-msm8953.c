@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/clk-provider.h>
 #include <linux/clk.h>
+#include <linux/cpuidle.h>
 #include <linux/cpumask.h>
 #include <linux/interconnect-clk.h>
 #include <linux/interconnect-provider.h>
@@ -174,6 +175,7 @@ struct apcs_md_clk {
 	unsigned int apcs_pll_fixed_factor;
 	struct cpumask cluster_cpus;
 	struct pm_qos_request lat_req;
+	bool qos_fallback;
 };
 
 #define to_apcs_md(_hw) container_of(_hw, struct apcs_md_clk, md.clkr.hw)
@@ -207,30 +209,78 @@ static void apcs_do_nothing(void *unused)
  * the reprogramming usually runs on a CPU of the *other* cluster.  If the
  * owning cluster power-collapses while the new L value is being latched,
  * the SPM gates the PLL and the lock-detect poll in
- * alpha_pll_huayra_set_rate() times out.  Keep the CPUs out of power
- * collapse for the duration of the rate change with a global CPU latency
- * QoS request (zero latency limits cpuidle to WFI), and kick one CPU of
- * the owning cluster so a cluster that is already collapsed wakes up
- * before the PLL is touched.
+ * alpha_pll_huayra_set_rate() times out.  Keep that cluster out of power
+ * collapse for the duration of the rate change, and kick one of its CPUs so
+ * a cluster that is already collapsed wakes up before the PLL is touched.
  *
- * The global cpu_latency_qos interface is chosen deliberately: it updates
- * under the pm_qos spinlock and notifies no chain, so it can be called
- * while clk_prepare_lock is held.  Per-CPU dev_pm_qos requests cannot -
- * their per-device mutex is also taken by the devfreq min_freq notifier,
- * which calls back into clk_set_rate (msm GPU devfreq), giving an ABBA
- * deadlock against this notifier.
+ * The hold is applied to the owning cluster only, by disabling everything
+ * deeper than WFI in its CPUs' cpuidle devices.  That flag is consulted by
+ * cpuidle_select() on the CPU itself, so applying it costs no IPI and
+ * constrains no other CPU on the machine.
+ *
+ * cpu_latency_qos is kept only as a fallback for the window before cpuidle
+ * has registered its devices, because it is a *global* constraint and an
+ * expensive one to toggle: every update re-runs the aggregation and calls
+ * wake_up_all_idle_cpus(), which pokes every idle CPU there is.  Measured on
+ * the Fairphone 3 (SDM632) with the UI idle and the panel off, when this
+ * notifier still used it unconditionally: 22.9 frequency transitions per
+ * second produced 45.8 pm_qos updates per second and 128 IPIs per second
+ * raised from wake_up_if_idle(), on a machine that was otherwise 96 % idle -
+ * and both clusters were barred from power collapse for the duration of
+ * every one of those holds, not just the cluster being retuned.
+ *
+ * Per-CPU dev_pm_qos resume-latency requests are not an option here: their
+ * per-device mutex is also taken by the devfreq min_freq notifier, which
+ * calls back into clk_set_rate (msm GPU devfreq), giving an ABBA deadlock
+ * against this notifier.  cpuidle_driver_state_disabled() takes cpuidle_lock,
+ * which nothing takes before clk_prepare_lock, so the order established here
+ * (clk_prepare_lock -> cpuidle_lock) is not part of any cycle.
  */
+static bool apcs_set_cluster_deep_idle(struct apcs_md_clk *apclk, bool disable)
+{
+	bool applied = false;
+	unsigned int cpu;
+
+	for_each_cpu(cpu, &apclk->cluster_cpus) {
+		struct cpuidle_device *dev = per_cpu(cpuidle_devices, cpu);
+		struct cpuidle_driver *drv;
+		int i;
+
+		if (!dev)
+			continue;
+
+		drv = cpuidle_get_cpu_driver(dev);
+		if (!drv)
+			continue;
+
+		/* State 0 is WFI; the SPM does not gate the PLL for it. */
+		for (i = 1; i < drv->state_count; i++)
+			cpuidle_driver_state_disabled(drv, i, disable);
+
+		applied = true;
+	}
+
+	return applied;
+}
+
 static void apcs_hold_cluster(struct apcs_md_clk *apclk, bool hold)
 {
 	if (cpumask_empty(&apclk->cluster_cpus))
 		return;
 
-	cpu_latency_qos_update_request(&apclk->lat_req,
-				       hold ? 0 : PM_QOS_DEFAULT_VALUE);
+	if (hold) {
+		apclk->qos_fallback = !apcs_set_cluster_deep_idle(apclk, true);
+		if (apclk->qos_fallback)
+			cpu_latency_qos_update_request(&apclk->lat_req, 0);
 
-	if (hold)
 		smp_call_function_any(&apclk->cluster_cpus, apcs_do_nothing,
 				      NULL, 1);
+	} else if (apclk->qos_fallback) {
+		cpu_latency_qos_update_request(&apclk->lat_req,
+					       PM_QOS_DEFAULT_VALUE);
+	} else {
+		apcs_set_cluster_deep_idle(apclk, false);
+	}
 }
 
 static int apcs_pll_notifier(struct notifier_block *nb, unsigned long action,
