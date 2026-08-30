@@ -4245,18 +4245,18 @@ static int wcd9335_setup_irqs(struct wcd9335_codec *wcd)
 		if (irq < 0) {
 			dev_err(wcd->dev, "Failed to get %s\n",
 					wcd9335_irqs[i].name);
-			return irq;
+			ret = irq;
+			goto err_free_irqs;
 		}
 
-		ret = devm_request_threaded_irq(wcd->dev, irq, NULL,
-						wcd9335_irqs[i].handler,
-						IRQF_TRIGGER_RISING |
-						IRQF_ONESHOT,
-						wcd9335_irqs[i].name, wcd);
+		ret = request_threaded_irq(irq, NULL,
+					   wcd9335_irqs[i].handler,
+					   IRQF_TRIGGER_RISING | IRQF_ONESHOT,
+					   wcd9335_irqs[i].name, wcd);
 		if (ret) {
 			dev_err(wcd->dev, "Failed to request %s\n",
 					wcd9335_irqs[i].name);
-			return ret;
+			goto err_free_irqs;
 		}
 	}
 
@@ -4264,6 +4264,13 @@ static int wcd9335_setup_irqs(struct wcd9335_codec *wcd)
 	for (i = 0; i < WCD9335_SLIM_NUM_PORT_REG; i++)
 		regmap_write(wcd->if_regmap, WCD9335_SLIM_PGD_PORT_INT_EN0 + i,
 			     0xFF);
+
+	return ret;
+
+err_free_irqs:
+	while (i--)
+		free_irq(regmap_irq_get_virq(wcd->irq_data, wcd9335_irqs[i].irq),
+			 wcd);
 
 	return ret;
 }
@@ -4276,6 +4283,16 @@ static void wcd9335_teardown_irqs(struct wcd9335_codec *wcd)
 	for (i = 0; i < WCD9335_SLIM_NUM_PORT_REG; i++)
 		regmap_write(wcd->if_regmap, WCD9335_SLIM_PGD_PORT_INT_EN0 + i,
 			     0x00);
+
+	/*
+	 * These are mapped by the interrupt chip, which the SLIMbus device
+	 * going down takes with it. Hand them back before that happens rather
+	 * than at driver unbind, which on a codec that is re-enumerated on
+	 * every ADSP restart never comes.
+	 */
+	for (i = 0; i < ARRAY_SIZE(wcd9335_irqs); i++)
+		free_irq(regmap_irq_get_virq(wcd->irq_data, wcd9335_irqs[i].irq),
+			 wcd);
 }
 
 static void wcd9335_cdc_sido_ccl_enable(struct wcd9335_codec *wcd,
