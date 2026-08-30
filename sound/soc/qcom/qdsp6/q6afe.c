@@ -976,8 +976,17 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 	switch (hdr->opcode) {
 	case APR_BASIC_RSP_RESULT: {
 		if (res->status) {
-			dev_err(afe->dev, "cmd = 0x%x returned error = 0x%x\n",
-				res->opcode, res->status);
+			/*
+			 * Starting a port that is already running is not an
+			 * error, see afe_apr_send_pkt().
+			 */
+			if (res->opcode == AFE_PORT_CMD_DEVICE_START &&
+			    res->status == ADSP_EALREADY)
+				dev_dbg(afe->dev, "cmd = 0x%x: port already started\n",
+					res->opcode);
+			else
+				dev_err(afe->dev, "cmd = 0x%x returned error = 0x%x\n",
+					res->opcode, res->status);
 		}
 		switch (res->opcode) {
 		case AFE_PORT_CMD_SET_PARAM_V2:
@@ -1059,9 +1068,25 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
 	if (!ret) {
 		ret = -ETIMEDOUT;
 	} else if (result->status > 0) {
-		dev_err(afe->dev, "DSP returned error[%x]\n",
-			result->status);
-		ret = -EINVAL;
+		/*
+		 * A port can already be running when several front ends share
+		 * one backend - for example a voice call and a media stream on
+		 * the same SLIMbus port, where the DAPM widget event starts the
+		 * port and the DAI prepare of the second user starts it again.
+		 * The ADSP then answers ADSP_EALREADY, which is not a failure:
+		 * the port is up, which is all the caller asked for. Failing
+		 * here instead leaves the card unusable until the next boot,
+		 * because nothing on the AP side can reset the ADSP port state.
+		 */
+		if (rsp_opcode == AFE_PORT_CMD_DEVICE_START &&
+		    result->status == ADSP_EALREADY) {
+			dev_dbg(afe->dev, "port already started\n");
+			ret = 0;
+		} else {
+			dev_err(afe->dev, "DSP returned error[%x]\n",
+				result->status);
+			ret = -EINVAL;
+		}
 	} else {
 		ret = 0;
 	}
