@@ -2656,6 +2656,16 @@ static int wcd9335_codec_enable_adc(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_PRE_PMU:
 		wcd9335_codec_set_tx_hold(comp, w->reg, true);
 		break;
+	case SND_SOC_DAPM_POST_PMU:
+		/*
+		 * The hold clamps the TX front-end while the analog input
+		 * powers up, and it has to be taken off again once the ADC is
+		 * running. Leaving it asserted keeps the decimator output at
+		 * zero, so capture only ever returns silence.
+		 */
+		usleep_range(1000, 1100);
+		wcd9335_codec_set_tx_hold(comp, w->reg, false);
+		break;
 	default:
 		break;
 	}
@@ -4577,17 +4587,23 @@ static const struct snd_soc_dapm_widget wcd9335_dapm_widgets[] = {
 			       SND_SOC_DAPM_POST_PMD),
 
 	SND_SOC_DAPM_ADC_E("ADC1", NULL, WCD9335_ANA_AMIC1, 7, 0,
-			   wcd9335_codec_enable_adc, SND_SOC_DAPM_PRE_PMU),
+			   wcd9335_codec_enable_adc,
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_ADC_E("ADC2", NULL, WCD9335_ANA_AMIC2, 7, 0,
-			   wcd9335_codec_enable_adc, SND_SOC_DAPM_PRE_PMU),
+			   wcd9335_codec_enable_adc,
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_ADC_E("ADC3", NULL, WCD9335_ANA_AMIC3, 7, 0,
-			   wcd9335_codec_enable_adc, SND_SOC_DAPM_PRE_PMU),
+			   wcd9335_codec_enable_adc,
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_ADC_E("ADC4", NULL, WCD9335_ANA_AMIC4, 7, 0,
-			   wcd9335_codec_enable_adc, SND_SOC_DAPM_PRE_PMU),
+			   wcd9335_codec_enable_adc,
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_ADC_E("ADC5", NULL, WCD9335_ANA_AMIC5, 7, 0,
-			   wcd9335_codec_enable_adc, SND_SOC_DAPM_PRE_PMU),
+			   wcd9335_codec_enable_adc,
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_ADC_E("ADC6", NULL, WCD9335_ANA_AMIC6, 7, 0,
-			   wcd9335_codec_enable_adc, SND_SOC_DAPM_PRE_PMU),
+			   wcd9335_codec_enable_adc,
+			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 
 	/* Digital Mic Inputs */
 	SND_SOC_DAPM_ADC_E("DMIC0", NULL, SND_SOC_NOPM, 0, 0,
