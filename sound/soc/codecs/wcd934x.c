@@ -2967,7 +2967,8 @@ static int wcd934x_mbhc_init(struct snd_soc_component *component)
 	intr_ids->hph_right_ocp = regmap_irq_get_virq(data->irq_data,
 						      WCD934X_IRQ_HPH_PA_OCPR_FAULT);
 
-	wcd->mbhc = wcd_mbhc_init(component, &mbhc_cb, intr_ids, wcd_mbhc_fields, true);
+	wcd->mbhc = wcd_mbhc_init(component, &mbhc_cb, intr_ids, wcd_mbhc_fields,
+				  WCD_DETECTION_ADC, true);
 	if (IS_ERR(wcd->mbhc)) {
 		wcd->mbhc = NULL;
 		return -EINVAL;
