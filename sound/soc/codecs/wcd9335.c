@@ -5408,14 +5408,24 @@ static int wcd9335_power_on_reset(struct wcd9335_codec *wcd)
 static int wcd9335_bring_up(struct wcd9335_codec *wcd)
 {
 	struct regmap *rm = wcd->regmap;
-	int val, byte0;
+	unsigned int val, byte0;
+	int ret;
 
-	regmap_read(rm, WCD9335_CHIP_TIER_CTRL_EFUSE_VAL_OUT0, &val);
-	regmap_read(rm, WCD9335_CHIP_TIER_CTRL_CHIP_ID_BYTE0, &byte0);
-
-	if ((val < 0) || (byte0 < 0)) {
-		dev_err(wcd->dev, "WCD9335 CODEC version detection fail!\n");
-		return -EINVAL;
+	/*
+	 * Both reads have to be checked: regmap_read() leaves its output
+	 * untouched when the transfer fails, so testing the value for a
+	 * negative number - as this did - reads uninitialised stack and
+	 * reports success or failure by luck. On this bus a read does fail,
+	 * every time the ADSP restarts underneath the codec.
+	 */
+	ret = regmap_read(rm, WCD9335_CHIP_TIER_CTRL_EFUSE_VAL_OUT0, &val);
+	if (!ret)
+		ret = regmap_read(rm, WCD9335_CHIP_TIER_CTRL_CHIP_ID_BYTE0,
+				  &byte0);
+	if (ret) {
+		dev_err(wcd->dev, "WCD9335 CODEC version detection fail: %d\n",
+			ret);
+		return ret;
 	}
 
 	if (byte0 == 0x1) {
