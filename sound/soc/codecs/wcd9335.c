@@ -5166,7 +5166,6 @@ static const struct snd_soc_component_driver wcd9335_component_drv = {
 	.endianness = 1,
 };
 
-
 static int wcd9335_probe(struct wcd9335_codec *wcd)
 {
 	struct device *dev = wcd->dev;
