@@ -5040,6 +5040,14 @@ static const struct regmap_irq wcd9335_codec_irqs[] = {
 			.type_reg_mask	= BIT(0),
 		},
 	},
+	[WCD9335_IRQ_HPH_PA_OCPL_FAULT] = {
+		.reg_offset = 0,
+		.mask = BIT(2),
+	},
+	[WCD9335_IRQ_HPH_PA_OCPR_FAULT] = {
+		.reg_offset = 0,
+		.mask = BIT(3),
+	},
 };
 
 static const unsigned int wcd9335_config_regs[] = {
