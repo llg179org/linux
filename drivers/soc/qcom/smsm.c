@@ -11,6 +11,7 @@
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
+#include <linux/suspend.h>
 #include <linux/regmap.h>
 #include <linux/soc/qcom/smem.h>
 #include <linux/soc/qcom/smem_state.h>
@@ -92,6 +93,9 @@ struct qcom_smsm {
 	struct smsm_host *hosts;
 
 	struct mbox_client mbox_client;
+
+	struct notifier_block pm_nb;
+	u32 proc_awake_mask;
 };
 
 /**
@@ -194,6 +198,31 @@ static int smsm_update_bits(void *data, u32 mask, u32 value)
 
 done:
 	return 0;
+}
+
+/*
+ * Mirror the system's suspend state into the "processor awake" bit, so a remote
+ * that watches it sees the AP go away and come back rather than a constant
+ * zero.  smsm_update_bits() takes the driver's own lock and rings the remote
+ * doorbells; both are safe from the PM notifier chain, which runs in process
+ * context with interrupts enabled.
+ */
+static int smsm_pm_notifier(struct notifier_block *nb, unsigned long event,
+			    void *unused)
+{
+	struct qcom_smsm *smsm = container_of(nb, struct qcom_smsm, pm_nb);
+
+	switch (event) {
+	case PM_SUSPEND_PREPARE:
+		smsm_update_bits(smsm, smsm->proc_awake_mask, 0);
+		break;
+	case PM_POST_SUSPEND:
+		smsm_update_bits(smsm, smsm->proc_awake_mask,
+				 smsm->proc_awake_mask);
+		break;
+	}
+
+	return NOTIFY_DONE;
 }
 
 static const struct qcom_smem_state_ops smsm_state_ops = {
@@ -639,6 +668,40 @@ static int qcom_smsm_probe(struct platform_device *pdev)
 			goto unwind_interfaces;
 	}
 
+	/*
+	 * Tell the remote processors whether this processor is awake.
+	 *
+	 * Some remote firmwares - the modem on msm8953 among them - decide how
+	 * much work to do per wakeup depending on whether they believe the
+	 * applications processor is available.  Downstream drives a single bit
+	 * of the local SMSM entry for this: set once the AP is up, cleared for
+	 * the duration of a system suspend.  Without it the entry reads zero
+	 * for the whole life of the system, which is indistinguishable from an
+	 * AP that never woke up.
+	 *
+	 * The bit number is a property of the platform's SMSM contract, so it
+	 * comes from the device tree rather than being assumed here.
+	 */
+	if (!of_property_read_u32(pdev->dev.of_node, "qcom,proc-awake-bit", &id)) {
+		if (id >= 32) {
+			dev_err(&pdev->dev, "invalid qcom,proc-awake-bit %u\n", id);
+			ret = -EINVAL;
+			goto unwind_interfaces;
+		}
+
+		smsm->proc_awake_mask = BIT(id);
+		smsm->pm_nb.notifier_call = smsm_pm_notifier;
+
+		ret = register_pm_notifier(&smsm->pm_nb);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to register pm notifier\n");
+			goto unwind_interfaces;
+		}
+
+		smsm_update_bits(smsm, smsm->proc_awake_mask,
+				 smsm->proc_awake_mask);
+	}
+
 	platform_set_drvdata(pdev, smsm);
 	of_node_put(local_node);
 
@@ -670,6 +733,11 @@ static void qcom_smsm_remove(struct platform_device *pdev)
 
 	for (id = 0; id < smsm->num_hosts; id++)
 		mbox_free_channel(smsm->hosts[id].mbox_chan);
+
+	if (smsm->proc_awake_mask) {
+		unregister_pm_notifier(&smsm->pm_nb);
+		smsm_update_bits(smsm, smsm->proc_awake_mask, 0);
+	}
 
 	qcom_smem_state_unregister(smsm->state);
 }
