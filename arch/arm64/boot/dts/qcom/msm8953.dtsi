@@ -880,6 +880,15 @@
 
 		mboxes = <0>, <&apcs 13>, <0>, <&apcs 19>;
 
+		/*
+		 * Bit 12 of the local entry is this platform's "applications
+		 * processor is awake" flag.  Downstream sets it once the AP is
+		 * up and clears it across suspend; without it the entry reads
+		 * zero forever, which the modem cannot tell apart from an AP
+		 * that never booted.
+		 */
+		qcom,proc-awake-bit = <12>;
+
 		apps_smsm: apps@0 {
 			reg = <0>;
 
