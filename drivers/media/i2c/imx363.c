@@ -25,7 +25,7 @@
 #define IMX363_CHIP_ID			0x0363
 
 /* V_TIMING internal */
-#define IMX363_VTS_30FPS		3136 //0c40
+#define IMX363_VTS_30FPS		3136
 #define IMX363_VTS_30FPS_HD		1296
 #define IMX363_VTS_MAX			65525
 
@@ -352,15 +352,18 @@ static const struct cci_reg_sequence mode_4032x3024_regs[] = {
 static const struct cci_reg_sequence mode_1920_1080_regs[] = {
 	{IMX363_REG_BINNING_MODE, 1},
 	{IMX363_REG_BINNING_TYPE_V, 0x42},
-	{IMX363_REG_X_ADD_STA, 0}, // analog cropping
+	/* analog crop */
+	{IMX363_REG_X_ADD_STA, 0},
 	{IMX363_REG_Y_ADD_STA, 0},
 	{IMX363_REG_X_ADD_END, 4031},
 	{IMX363_REG_Y_ADD_END, 3023},
-	{IMX363_REG_X_EVN_INC, 1}, //subsampling
+	/* subsampling */
+	{IMX363_REG_X_EVN_INC, 1},
 	{IMX363_REG_X_ODD_INC, 1},
 	{IMX363_REG_Y_EVN_INC, 1},
 	{IMX363_REG_Y_ODD_INC, 1},
-	{IMX363_REG_DIG_CROP_X_OFFSET, 0}, // digital cropping
+	/* digital crop */
+	{IMX363_REG_DIG_CROP_X_OFFSET, 0},
 	{IMX363_REG_DIG_CROP_Y_OFFSET, 0},
 	{IMX363_REG_DIG_CROP_IMAGE_WIDTH, 1920},
 	{IMX363_REG_DIG_CROP_IMAGE_HEIGHT, 1080},
@@ -432,10 +435,16 @@ static u64 link_freq_to_pixel_rate(u64 f, const struct imx363_link_cfg *link_cfg
 }
 
 /* Menu items for LINK_FREQ V4L2 control */
-/* Configurations for supported link frequencies */
-
+/*
+ * Configurations for supported link frequencies.
+ *
+ * The 636 MHz entry came with the Pixel 3a driver this one was imported
+ * from; it was not derived from the mode's PLL registers here and has not
+ * been checked against the datasheet. The board's link-frequencies carry
+ * the same value.
+ */
 static const s64 link_freq_menu_items_24[] = {
-	636000000ULL, // NOT SURE HOW TO FIND THIS VALUE
+	636000000ULL,
 	321000000ULL,
 };
 
