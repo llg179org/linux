@@ -308,7 +308,12 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sdm630-sony-xperia-ganges-kirin.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sdm630-sony-xperia-nile-discovery.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sdm630-sony-xperia-nile-pioneer.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sdm630-sony-xperia-nile-voyager.dtb
+sdm632-fairphone-fp3-rear-camera-ak7374-dtbs	:= sdm632-fairphone-fp3.dtb sdm632-fairphone-fp3-rear-camera-ak7374.dtbo
+sdm632-fairphone-fp3-rear-camera-lc898217-dtbs	:= sdm632-fairphone-fp3.dtb sdm632-fairphone-fp3-rear-camera-lc898217.dtbo
+
 dtb-$(CONFIG_ARCH_QCOM)	+= sdm632-fairphone-fp3.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= sdm632-fairphone-fp3-rear-camera-ak7374.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= sdm632-fairphone-fp3-rear-camera-lc898217.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sdm632-motorola-ocean.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sdm632-motorola-river.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sdm632-vsmart-casuarina.dtb
