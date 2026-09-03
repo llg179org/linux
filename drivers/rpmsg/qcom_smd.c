@@ -12,6 +12,7 @@
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeirq.h>
 #include <linux/regmap.h>
 #include <linux/sched.h>
 #include <linux/sizes.h>
@@ -1428,6 +1429,18 @@ static int qcom_smd_parse_edge(struct device *dev,
 
 	edge->irq = irq;
 
+	/*
+	 * Treat the edge interrupt as a wakeup source, but keep it disabled
+	 * by default.  User space can enable it per edge depending on its use
+	 * case - e.g. arm the modem edge so an incoming call interrupts
+	 * system suspend, while other edges keep following the default
+	 * wakeup events.
+	 */
+	device_set_wakeup_capable(dev, true);
+	ret = dev_pm_set_wake_irq(dev, irq);
+	if (ret)
+		dev_warn(dev, "failed to set wake irq: %d\n", ret);
+
 	return 0;
 
 put_node:
@@ -1522,6 +1535,7 @@ unregister_dev:
 	if (!IS_ERR_OR_NULL(edge->mbox_chan))
 		mbox_free_channel(edge->mbox_chan);
 
+	dev_pm_clear_wake_irq(&edge->dev);
 	device_unregister(&edge->dev);
 	return ERR_PTR(ret);
 }
@@ -1542,9 +1556,19 @@ void qcom_smd_unregister_edge(struct qcom_smd_edge *edge)
 {
 	int ret;
 
+	dev_pm_clear_wake_irq(&edge->dev);
 	disable_irq(edge->irq);
 	cancel_work_sync(&edge->scan_work);
 	cancel_work_sync(&edge->state_work);
+
+	/*
+	 * An armed wakeup source owns a device of its own, parented to the
+	 * edge.  Drop it before walking the children below, which unregisters
+	 * every child as if it were an smd channel and would otherwise leave
+	 * the wakeup source's device to be unregistered a second time when
+	 * the edge itself goes away.
+	 */
+	device_wakeup_disable(&edge->dev);
 
 	ret = device_for_each_child(&edge->dev, NULL, qcom_smd_remove_device);
 	if (ret)
