@@ -21,6 +21,8 @@
 #include <linux/slab.h>
 #include <linux/soc/qcom/irq.h>
 #include <linux/spinlock.h>
+#include <linux/tick.h>
+#include <clocksource/arm_arch_timer.h>
 
 /*
  * This is the driver for Qualcomm MPM (MSM Power Manager) interrupt controller,
@@ -292,6 +294,45 @@ static irqreturn_t qcom_mpm_handler(int irq, void *dev_id)
 	return ret;
 }
 
+/*
+ * The two words in front of the register block hold the timestamp, in
+ * architected timer ticks, at which the RPM has to bring the application
+ * processor back up. Program it from the next timer event before handing
+ * the vMPM over, otherwise the RPM has no wakeup deadline to honour.
+ *
+ * An all-ones deadline means "no scheduled wakeup, bring me back only on a
+ * monitored interrupt". That is the vendor driver's own encoding for a system
+ * with no armed broadcast timer, so the RPM is known to accept it, and it is
+ * what tick_nohz_get_next_hrtimer() returning KTIME_MAX means here.
+ *
+ * The current time comes from ktime_get_mono_fast_ns() rather than ktime_get():
+ * this runs from the domain's ->power_off callback, which on suspend-to-idle is
+ * reached after timekeeping_suspend(), where ktime_get() is not allowed to be
+ * called and says so with a WARN. The fast accessor is the one that stays
+ * usable across that window.
+ */
+static void mpm_write_wakeup(struct qcom_mpm_priv *priv)
+{
+	ktime_t next = tick_nohz_get_next_hrtimer();
+	u64 ticks;
+	s64 delta;
+
+	if (next == KTIME_MAX) {
+		ticks = ~0ULL;
+	} else {
+		delta = ktime_to_ns(next) - ktime_get_mono_fast_ns();
+		if (delta < 0)
+			delta = 0;
+
+		ticks = arch_timer_read_counter() +
+			mul_u64_u32_div(delta, arch_timer_get_cntfrq(),
+					NSEC_PER_SEC);
+	}
+
+	writel_relaxed(lower_32_bits(ticks), priv->base);
+	writel_relaxed(upper_32_bits(ticks), priv->base + 4);
+}
+
 static int mpm_pd_power_off(struct generic_pm_domain *genpd)
 {
 	struct qcom_mpm_priv *priv = container_of(genpd, struct qcom_mpm_priv,
@@ -300,6 +341,8 @@ static int mpm_pd_power_off(struct generic_pm_domain *genpd)
 
 	for (i = 0; i < priv->reg_stride; i++)
 		qcom_mpm_write(priv, MPM_REG_STATUS, i, 0);
+
+	mpm_write_wakeup(priv);
 
 	/* Notify RPM to write vMPM into HW */
 	ret = mbox_send_message(priv->mbox_chan, NULL);
