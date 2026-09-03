@@ -12,7 +12,7 @@ maintainers:
 description: |
   Flash LED controller is present inside some Qualcomm Technologies, Inc. PMICs.
   The flash LED module can have different number of LED channels supported
-  e.g. 3 or 4. There are some different registers between them but they can
+  e.g. 2, 3 or 4. There are some different registers between them but they can
   both support maximum current up to 1.5 A per channel and they can also support
   ganging 2 channels together to supply maximum current up to 2 A. The current
   will be split symmetrically on each channel and they will be enabled and
@@ -30,6 +30,7 @@ properties:
           - qcom,pm8350c-flash-led
           - qcom,pm8550-flash-led
           - qcom,pmh0101-flash-led
+          - qcom,pmi632-flash-led
           - qcom,pmi8998-flash-led
       - const: qcom,spmi-flash-led
 
