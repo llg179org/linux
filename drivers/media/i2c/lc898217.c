@@ -49,11 +49,16 @@ static inline u16 lc898217_position_to_code(s32 position)
 	return LC898217_FOCUS_MAX - position;
 }
 
+static const char * const lc898217_supply_names[] = {
+	"vaf",
+	"vio",
+};
+
 struct lc898217 {
 	struct v4l2_ctrl_handler ctrls;
 	struct v4l2_subdev sd;
 	struct v4l2_ctrl *focus;
-	struct regulator *vcc;
+	struct regulator_bulk_data supplies[ARRAY_SIZE(lc898217_supply_names)];
 };
 
 static inline struct lc898217 *ctrl_to_lc898217(struct v4l2_ctrl *ctrl)
@@ -153,10 +158,13 @@ static int lc898217_probe(struct i2c_client *client)
 	if (!lc898217)
 		return -ENOMEM;
 
-	lc898217->vcc = devm_regulator_get(dev, "vcc");
-	if (IS_ERR(lc898217->vcc))
-		return dev_err_probe(dev, PTR_ERR(lc898217->vcc),
-				     "failed to get the vcc regulator\n");
+	for (int i = 0; i < ARRAY_SIZE(lc898217_supply_names); i++)
+		lc898217->supplies[i].supply = lc898217_supply_names[i];
+
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(lc898217_supply_names),
+				      lc898217->supplies);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to get regulators\n");
 
 	v4l2_i2c_subdev_init(&lc898217->sd, client, &lc898217_ops);
 	lc898217->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
@@ -192,7 +200,8 @@ static int lc898217_runtime_suspend(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct lc898217 *lc898217 = sd_to_lc898217(sd);
 
-	return regulator_disable(lc898217->vcc);
+	return regulator_bulk_disable(ARRAY_SIZE(lc898217_supply_names),
+				      lc898217->supplies);
 }
 
 static int lc898217_runtime_resume(struct device *dev)
@@ -202,7 +211,8 @@ static int lc898217_runtime_resume(struct device *dev)
 	unsigned int tries;
 	int ret;
 
-	ret = regulator_enable(lc898217->vcc);
+	ret = regulator_bulk_enable(ARRAY_SIZE(lc898217_supply_names),
+				    lc898217->supplies);
 	if (ret)
 		return ret;
 
@@ -218,7 +228,7 @@ static int lc898217_runtime_resume(struct device *dev)
 	}
 	if (ret) {
 		dev_err(dev, "failed to enable the actuator: %d\n", ret);
-		goto err_disable_vcc;
+		goto err_disable_regulators;
 	}
 
 	usleep_range(LC898217_ENABLE_DELAY_US, LC898217_ENABLE_DELAY_US + 500);
@@ -226,13 +236,14 @@ static int lc898217_runtime_resume(struct device *dev)
 	ret = lc898217_set_position(lc898217, lc898217->focus->val);
 	if (ret) {
 		dev_err(dev, "failed to set the lens position: %d\n", ret);
-		goto err_disable_vcc;
+		goto err_disable_regulators;
 	}
 
 	return 0;
 
-err_disable_vcc:
-	regulator_disable(lc898217->vcc);
+err_disable_regulators:
+	regulator_bulk_disable(ARRAY_SIZE(lc898217_supply_names),
+			       lc898217->supplies);
 
 	return ret;
 }
