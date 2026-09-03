@@ -47,6 +47,19 @@ struct vfe_hw_ops_gen1 {
 	void (*wm_frame_based)(struct vfe_device *vfe, u8 wm, u8 enable);
 	void (*wm_line_based)(struct vfe_device *vfe, u32 wm, struct v4l2_pix_format_mplane *pix,
 			      u8 plane, u32 enable);
+	/*
+	 * Optional. Programs an RDI write master line by line rather than as
+	 * one continuous run, which is the only way it can leave a gap at the
+	 * end of each line. @packed_bpl is the image data per line and
+	 * @pix->plane_fmt[0].bytesperline the buffer's stride; where they are
+	 * equal this is only a longer way of writing the frame-based case, so
+	 * the caller uses it solely when they differ. Leave NULL on a
+	 * generation whose register layout has not been checked against the
+	 * hardware.
+	 */
+	void (*wm_raw_stride)(struct vfe_device *vfe, u8 wm,
+			      struct v4l2_pix_format_mplane *pix,
+			      unsigned int packed_bpl, u8 enable);
 	void (*wm_set_ub_cfg)(struct vfe_device *vfe, u8 wm, u16 offset, u16 depth);
 	void (*wm_set_subsample)(struct vfe_device *vfe, u8 wm);
 	void (*wm_set_framedrop_period)(struct vfe_device *vfe, u8 wm, u8 per);
