@@ -21,13 +21,21 @@ properties:
   reg:
     maxItems: 1
 
-  vcc-supply:
-    description: Actuator supply
+  vaf-supply:
+    description: Actuator (VCM driver) supply
+
+  vio-supply:
+    description:
+      I/O supply. It is shared with the camera sensor on the modules the
+      actuator ships in, and the actuator does not answer on I2C unless it
+      is on; the driver enables it for the whole time the actuator is
+      powered so the sensor going down does not take the bus with it.
 
 required:
   - compatible
   - reg
-  - vcc-supply
+  - vaf-supply
+  - vio-supply
 
 additionalProperties: false
 
@@ -41,7 +49,8 @@ examples:
             compatible = "onnn,lc898217xc";
             reg = <0x72>;
 
-            vcc-supply = <&vreg_cam_af_2p85>;
+            vaf-supply = <&vreg_cam_af_2p85>;
+            vio-supply = <&vreg_cam_io_1p8>;
         };
     };
 
