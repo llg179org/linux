@@ -469,19 +469,30 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 	u32 bytesperline[3] = { 0 };
 	u32 sizeimage[3] = { 0 };
 	u32 width, height;
-	u32 bpl, lines;
+	u32 bpl, lines, max_lines;
+	bool honour_bpl;
 	int i, j;
 
 	pix_mp = &f->fmt.pix_mp;
 
-	if (video->line_based)
+	/*
+	 * A request for padding is only worth remembering where the hardware
+	 * can act on it. The pixel path has always been able to; an RDI write
+	 * master can be, on the generations whose ops implement it, which is
+	 * what can_pad_bpl says.
+	 */
+	honour_bpl = video->line_based || video->can_pad_bpl;
+	max_lines = video->line_based ? CAMSS_FRAME_MAX_HEIGHT_PIX :
+					CAMSS_FRAME_MAX_HEIGHT_RDI;
+
+	if (honour_bpl)
 		for (i = 0; i < pix_mp->num_planes && i < 3; i++) {
 			p = &pix_mp->plane_fmt[i];
 			bytesperline[i] = clamp_t(u32, p->bytesperline,
 						  1, 65528);
 			sizeimage[i] = clamp_t(u32, p->sizeimage,
 					       bytesperline[i],
-					       bytesperline[i] * CAMSS_FRAME_MAX_HEIGHT_PIX);
+					       bytesperline[i] * max_lines);
 		}
 
 	for (j = 0; j < video->nformats; j++)
@@ -521,14 +532,14 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 					pix_mp->colorspace, pix_mp->ycbcr_enc);
 	pix_mp->xfer_func = V4L2_MAP_XFER_FUNC_DEFAULT(pix_mp->colorspace);
 
-	if (video->line_based)
+	if (honour_bpl)
 		for (i = 0; i < pix_mp->num_planes; i++) {
 			p = &pix_mp->plane_fmt[i];
 			p->bytesperline = clamp_t(u32, p->bytesperline,
 						  1, 65528);
 			p->sizeimage = clamp_t(u32, p->sizeimage,
 					       p->bytesperline,
-					       p->bytesperline * CAMSS_FRAME_MAX_HEIGHT_PIX);
+					       p->bytesperline * max_lines);
 			lines = p->sizeimage / p->bytesperline;
 
 			if (p->bytesperline < bytesperline[i])
@@ -759,6 +770,38 @@ error_vb2_init:
 	mutex_destroy(&video->q_lock);
 
 	return ret;
+}
+
+/**
+ * msm_video_packed_bpl - the bytes a line of the active format actually holds
+ * @video: the video node
+ *
+ * The active format carries the stride the buffer was given, which may be
+ * larger than the line it has to hold - that is what a granted padding request
+ * looks like. Recovering the unpadded length is what tells the two apart, and
+ * what the write master needs alongside the stride to write one and skip to
+ * the other.
+ *
+ * Returns: bytes per line of image data, or 0 if the active format is not one
+ * this node knows.
+ */
+unsigned int msm_video_packed_bpl(struct camss_video *video)
+{
+	struct v4l2_pix_format_mplane *pix_mp = &video->active_fmt.fmt.pix_mp;
+	const struct camss_format_info *fi;
+	unsigned int i;
+
+	for (i = 0; i < video->nformats; i++)
+		if (video->formats[i].pixelformat == pix_mp->pixelformat)
+			break;
+
+	if (i == video->nformats)
+		return 0;
+
+	fi = &video->formats[i];
+
+	return pix_mp->width / fi->hsub[0].numerator * fi->hsub[0].denominator *
+	       fi->bpp[0] / 8;
 }
 
 void msm_video_unregister(struct camss_video *video)
