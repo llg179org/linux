@@ -44,6 +44,16 @@ properties:
   '#size-cells':
     const: 0
 
+  qcom,proc-awake-bit:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 31
+    description:
+      Bit of the local processor's state entry that tells the remote
+      processors whether this processor is awake. When present, the bit is
+      set while the system runs and cleared for the duration of a system
+      suspend; which bit carries this meaning is part of the platform's
+      SMSM contract (bit 12 on msm8953).
+
 patternProperties:
   "^qcom,ipc-[1-4]$":
     $ref: /schemas/types.yaml#/definitions/phandle-array
