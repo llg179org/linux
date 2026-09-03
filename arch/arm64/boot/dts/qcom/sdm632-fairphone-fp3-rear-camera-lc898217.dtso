@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Fairphone 3 rear camera module overlay: IMX363 at 0x10 with an LC898217XC actuator at 0x72
+ *
+ * Fairphone shipped the FP3 with two rear camera modules that the firmware
+ * cannot tell apart, so each is described by an overlay on top of
+ * sdm632-fairphone-fp3.dts. This is the module with the LC898217XC actuator.
+ */
+
+#include <dt-bindings/clock/qcom,gcc-msm8953.h>
+#include <dt-bindings/gpio/gpio.h>
+
+/dts-v1/;
+/plugin/;
+
+&cci_i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* Sony IMX363 (rear) @ 0x10 */
+	camera@10 {
+		compatible = "sony,imx363";
+		reg = <0x10>;
+
+		/* Rear (world-facing) sensor, mounted rotated 270 degrees. */
+		orientation = <1>;
+		rotation = <270>;
+
+		reset-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clock-rates = <24000000>;
+		clock-frequency = <24000000>;
+
+		vana-supply = <&pm8953_l22>;	/* 2.8V analog */
+		vdig-supply = <&pm8953_l2>;	/* 1.2V digital core */
+		vif-supply = <&vreg_cam_io_1p8>;	/* 1.8V IO */
+
+		lens-focus = <&camera_lens>;
+
+		port {
+			imx363_ep: endpoint {
+				data-lanes = <0 1 2 3>;
+				link-frequencies = /bits/ 64
+					<636000000 321000000>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
+	};
+
+	/*
+	 * The vio supply is needed because the actuator's I/O domain is the
+	 * rail it shares with the sensor, and the sensor has already powered
+	 * down again by the time the actuator is probed.
+	 */
+	camera_lens: camera-lens@72 {
+		compatible = "onnn,lc898217xc";
+		reg = <0x72>;
+
+		vaf-supply = <&vreg_cam_af_2p85>;
+		vio-supply = <&vreg_cam_io_1p8>;
+	};
+};
+
+&camss {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+
+			csiphy0_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&imx363_ep>;
+			};
+		};
+	};
+};
