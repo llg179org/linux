@@ -1073,8 +1073,22 @@ static int msm8916_wcd_digital_startup(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = dai->component;
 	struct msm8916_wcd_digital_priv *msm8916_wcd;
 	unsigned long mclk_rate;
+	int ret;
 
 	msm8916_wcd = snd_soc_component_get_drvdata(component);
+
+	/*
+	 * mclk may be supplied by the ADSP (q6afe clock controller); keeping
+	 * it requested while no stream runs prevents the DSP from ever
+	 * entering its low-power state.  Request it only for the lifetime of
+	 * a stream.
+	 */
+	ret = clk_prepare_enable(msm8916_wcd->mclk);
+	if (ret < 0) {
+		dev_err(component->dev, "failed to enable mclk %d\n", ret);
+		return ret;
+	}
+
 	snd_soc_component_update_bits(component, LPASS_CDC_CLK_MCLK_CTL,
 			    MCLK_CTL_MCLK_EN_MASK,
 			    MCLK_CTL_MCLK_EN_ENABLE);
@@ -1104,8 +1118,12 @@ static int msm8916_wcd_digital_startup(struct snd_pcm_substream *substream,
 static void msm8916_wcd_digital_shutdown(struct snd_pcm_substream *substream,
 					 struct snd_soc_dai *dai)
 {
+	struct msm8916_wcd_digital_priv *msm8916_wcd;
+
+	msm8916_wcd = snd_soc_component_get_drvdata(dai->component);
 	snd_soc_component_update_bits(dai->component, LPASS_CDC_CLK_PDM_CTL,
 			    LPASS_CDC_CLK_PDM_CTL_PDM_CLK_SEL_MASK, 0);
+	clk_disable_unprepare(msm8916_wcd->mclk);
 }
 
 static const struct snd_soc_dai_ops msm8916_wcd_digital_dai_ops = {
@@ -1195,24 +1213,16 @@ static int msm8916_wcd_digital_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = clk_prepare_enable(priv->mclk);
-	if (ret < 0) {
-		dev_err(dev, "failed to enable mclk %d\n", ret);
-		goto err_clk;
-	}
-
 	dev_set_drvdata(dev, priv);
 
 	ret = devm_snd_soc_register_component(dev, &msm8916_wcd_digital,
 				      msm8916_wcd_digital_dai,
 				      ARRAY_SIZE(msm8916_wcd_digital_dai));
 	if (ret)
-		goto err_mclk;
+		goto err_clk;
 
 	return 0;
 
-err_mclk:
-	clk_disable_unprepare(priv->mclk);
 err_clk:
 	clk_disable_unprepare(priv->ahbclk);
 	return ret;
@@ -1222,7 +1232,6 @@ static void msm8916_wcd_digital_remove(struct platform_device *pdev)
 {
 	struct msm8916_wcd_digital_priv *priv = dev_get_drvdata(&pdev->dev);
 
-	clk_disable_unprepare(priv->mclk);
 	clk_disable_unprepare(priv->ahbclk);
 }
 
