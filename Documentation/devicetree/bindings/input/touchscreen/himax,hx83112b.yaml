@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/touchscreen/himax,hx83112b.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Himax HX83100A/HX83112B touchscreen controller
+
+maintainers:
+  - Job Noorman <job@noorman.info>
+
+description: |
+  These parts are touch-and-display driver integration (TDDI) controllers: the
+  same die drives the display and the touch panel, and both halves are fed from
+  the panel's rails. The display half is described by
+  bindings/display/panel/himax,hx83112a.yaml and
+  bindings/display/panel/himax,hx83112b.yaml, which require iovcc-supply among
+  others. The touch half needs the same I/O rail, so it has to hold its own
+  reference to it - otherwise the panel driver's vote is the only one, and the
+  touch controller loses its supply whenever the display is powered down while
+  the touch driver still believes the device is reachable.
+
+allOf:
+  - $ref: touchscreen.yaml#
+
+properties:
+  compatible:
+    enum:
+      - himax,hx83100a
+      - himax,hx83112b
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  reset-gpios:
+    maxItems: 1
+    description: External reset (XRES), active low
+
+  iovcc-supply:
+    description:
+      I/O voltage rail, shared with the display half of the same controller.
+
+  vdda-supply:
+    description: Analog voltage rail.
+
+  touchscreen-inverted-x: true
+  touchscreen-inverted-y: true
+  touchscreen-size-x: true
+  touchscreen-size-y: true
+  touchscreen-swapped-x-y: true
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - reset-gpios
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touchscreen@48 {
+            compatible = "himax,hx83112b";
+            reg = <0x48>;
+            interrupt-parent = <&tlmm>;
+            interrupts = <65 IRQ_TYPE_LEVEL_LOW>;
+            reset-gpios = <&tlmm 64 GPIO_ACTIVE_LOW>;
+            iovcc-supply = <&pm8953_l6>;
+            vdda-supply = <&pm8953_l10>;
+            touchscreen-size-x = <1080>;
+            touchscreen-size-y = <2160>;
+        };
+    };
