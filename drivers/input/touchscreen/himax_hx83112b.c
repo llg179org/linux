@@ -22,6 +22,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 
 #define HIMAX_MAX_POINTS		10
 
@@ -74,6 +75,13 @@ struct himax_ts_data {
 	struct regmap *regmap;
 	struct touchscreen_properties props;
 };
+
+/*
+ * iovcc is the rail the display half of the same controller also takes; vdda is
+ * the analog rail. Both are optional so that boards which do not describe them
+ * keep working on the dummy regulator.
+ */
+static const char * const himax_supplies[] = { "iovcc", "vdda" };
 
 static const struct regmap_config himax_regmap_config = {
 	.reg_bits = 8,
@@ -348,6 +356,27 @@ static int himax_probe(struct i2c_client *client)
 		dev_err(dev, "Failed to initialize regmap: %d\n", error);
 		return error;
 	}
+
+	/*
+	 * These parts are TDDI controllers: one die drives the display and the
+	 * touch panel, and both halves live on the panel's rails. The display
+	 * half is a separate DT node with its own iovcc-supply, so without a
+	 * reference of our own the panel driver's vote is the only one - and
+	 * when the display is powered down the touch controller loses its I/O
+	 * supply while this driver still believes the device is reachable.
+	 *
+	 * Measured on a Fairphone 3 (hx83112b on BLSP1 QUP3): with the display
+	 * off, the panel drops the rail, the controller stops driving the bus,
+	 * and the next transfer holds both lines low until the QUP transfer
+	 * timeout expires - 15 s on that board - after which the driver reports
+	 * -ETIMEDOUT and drops the touch. Holding the rail here removes it.
+	 *
+	 * Boards that describe no supply get the dummy regulator, as before.
+	 */
+	error = devm_regulator_bulk_get_enable(dev, ARRAY_SIZE(himax_supplies),
+					       himax_supplies);
+	if (error)
+		return dev_err_probe(dev, error, "Failed to enable supplies\n");
 
 	ts->gpiod_rst = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	error = PTR_ERR_OR_ZERO(ts->gpiod_rst);
