@@ -976,6 +976,7 @@ static unsigned long qup_i2c_xfer_timeout(struct qup_i2c_dev *qup, size_t len)
  */
 static void qup_i2c_bus_clear(struct qup_i2c_dev *qup)
 {
+	u32 status = 0, bus_clr = 0;
 	unsigned long wait_us;
 	int i;
 
@@ -987,8 +988,6 @@ static void qup_i2c_bus_clear(struct qup_i2c_dev *qup)
 	wait_us = max_t(unsigned long, 10 * qup->one_byte_t, 100);
 
 	for (i = 0; i < QUP_BUS_CLEAR_TRIES; i++) {
-		u32 status;
-
 		/* drop whatever the failed transfer left queued */
 		qup_i2c_flush(qup);
 
@@ -1000,8 +999,8 @@ static void qup_i2c_bus_clear(struct qup_i2c_dev *qup)
 		usleep_range(wait_us, wait_us * 2);
 
 		status = readl(qup->base + QUP_I2C_STATUS);
-		if (!readl(qup->base + QUP_I2C_MASTER_BUS_CLR) &&
-		    !(status & I2C_STATUS_BUS_ACTIVE) &&
+		bus_clr = readl(qup->base + QUP_I2C_MASTER_BUS_CLR);
+		if (!bus_clr && !(status & I2C_STATUS_BUS_ACTIVE) &&
 		    status & I2C_STATUS_SDA) {
 			dev_dbg(qup->dev, "bus cleared after %d attempt(s)\n",
 				i + 1);
@@ -1009,9 +1008,19 @@ static void qup_i2c_bus_clear(struct qup_i2c_dev *qup)
 		}
 	}
 
+	/*
+	 * Name the condition that never cleared. Without it the failure says
+	 * only that something is wrong, and the three causes want different
+	 * answers: a slave still clamping SDA, a controller that never let the
+	 * bus go, or a bus-clear the hardware did not accept at all.
+	 */
 	dev_err_ratelimited(qup->dev,
-			    "bus still held after %d bus-clear attempts\n",
-			    QUP_BUS_CLEAR_TRIES);
+			    "bus still held after %d bus-clear attempts: %s%s%s(I2C_STATUS 0x%08x, BUS_CLR 0x%x)\n",
+			    QUP_BUS_CLEAR_TRIES,
+			    bus_clr ? "clear not accepted, " : "",
+			    status & I2C_STATUS_BUS_ACTIVE ? "bus still active, " : "",
+			    status & I2C_STATUS_SDA ? "" : "SDA still low, ",
+			    status, bus_clr);
 }
 
 static int qup_i2c_wait_for_complete(struct qup_i2c_dev *qup,
