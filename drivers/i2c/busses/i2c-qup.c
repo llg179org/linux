@@ -42,6 +42,7 @@
 #define QUP_I2C_CLK_CTL		0x400
 #define QUP_I2C_STATUS		0x404
 #define QUP_I2C_MASTER_GEN	0x408
+#define QUP_I2C_MASTER_BUS_CLR	0x40c
 
 /* QUP States and reset values */
 #define QUP_RESET_STATE		0
@@ -114,6 +115,9 @@
 /* Status, Error flags */
 #define I2C_STATUS_WR_BUFFER_FULL	BIT(0)
 #define I2C_STATUS_BUS_ACTIVE		BIT(8)
+#define I2C_STATUS_BUS_MASTER		BIT(9)
+#define I2C_STATUS_SDA			BIT(26)
+#define I2C_STATUS_SCL			BIT(27)
 #define I2C_STATUS_ERROR_MASK		0x38000fc
 #define QUP_STATUS_ERROR_FLAGS		0x7c
 
@@ -958,6 +962,26 @@ static int qup_i2c_wait_for_complete(struct qup_i2c_dev *qup,
 	left = wait_for_completion_timeout(&qup->xfer,
 					   qup_i2c_xfer_timeout(qup, msg->len));
 	if (!left) {
+		u32 status = readl(qup->base + QUP_I2C_STATUS);
+
+		/*
+		 * A timeout says only that nothing completed. Whether the bus
+		 * was left held, and by whom, is in the status register and is
+		 * the difference between a stuck slave and a misrouted pin -
+		 * so print it instead of making the next reader guess. It is
+		 * rate limited because a slave that wedges asserts its
+		 * interrupt continuously.
+		 */
+		dev_err_ratelimited(qup->dev,
+				    "transfer to 0x%02x timed out, bus %s, %s, SDA %d SCL %d (I2C_STATUS 0x%08x)\n",
+				    msg->addr,
+				    status & I2C_STATUS_BUS_ACTIVE ?
+					    "active" : "idle",
+				    status & I2C_STATUS_BUS_MASTER ?
+					    "master is us" : "master is not us",
+				    !!(status & I2C_STATUS_SDA),
+				    !!(status & I2C_STATUS_SCL), status);
+
 		writel(1, qup->base + QUP_SW_RESET);
 		ret = -ETIMEDOUT;
 	}
