@@ -297,15 +297,36 @@ static int hx83100a_read_events(struct himax_ts_data *ts,
 	return himax_bus_read(ts, HX83100A_REG_FW_EVENT_STACK, event, length);
 };
 
+/*
+ * The controller intermittently fails to answer a read of the event stack, and
+ * a single failure loses the touch that caused the interrupt - including, when
+ * it happens mid-gesture, the release, so userspace is left holding a button
+ * down until something rebinds the driver. The vendor driver retries every
+ * register access, and ak7375 on the same board was given the same treatment
+ * for the same -ETIMEDOUT signature. A handful of retries costs nothing when
+ * the bus is healthy and covers a transient failure.
+ */
+#define HIMAX_READ_RETRIES	3
+
 static int himax_handle_input(struct himax_ts_data *ts)
 {
-	int error;
+	int error, tries = HIMAX_READ_RETRIES;
 	struct himax_event event;
 
-	error = ts->chip->read_events(ts, &event, sizeof(event));
+	do {
+		error = ts->chip->read_events(ts, &event, sizeof(event));
+	} while (error && --tries);
+
 	if (error) {
-		dev_err(&ts->client->dev, "Failed to read input event: %d\n",
-			error);
+		/*
+		 * Rate-limited: when the controller wedges it asserts its
+		 * interrupt continuously, and an unlimited dev_err() then
+		 * writes over a hundred lines a second to the log for as long
+		 * as the wedge lasts - measured at ~158/s for three minutes,
+		 * which is a fault of its own on a phone.
+		 */
+		dev_err_ratelimited(&ts->client->dev,
+				    "Failed to read input event: %d\n", error);
 		return error;
 	}
 
