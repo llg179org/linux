@@ -820,6 +820,14 @@ static int qup_i2c_bam_schedule_desc(struct qup_i2c_dev *qup)
 		dma_async_issue_pending(qup->brx.dma);
 	}
 
+	/*
+	 * The BAM path batches several messages into one descriptor set and
+	 * has no single length to size a timeout from, and it is the path that
+	 * carries the large transfers the probe-time value was chosen for. It
+	 * keeps that value deliberately; the per-transfer sizing above is for
+	 * the FIFO and block paths, where a small register read would
+	 * otherwise inherit a 128 KB transfer's timeout.
+	 */
 	if (!wait_for_completion_timeout(&qup->xfer, qup->xfer_timeout))
 		ret = -ETIMEDOUT;
 
@@ -925,13 +933,30 @@ out:
 	return ret;
 }
 
+/*
+ * Size the wait for the transfer that is actually queued.
+ *
+ * qup->xfer_timeout is computed once at probe from MX_DMA_TX_RX_LEN, the
+ * largest transfer the controller could ever do, so a two-byte register read
+ * waits as long as a 128 KB DMA burst would - at the default 100 kHz that is
+ * TOUT_MIN + 128K * 9 bit-times, close to fifteen seconds. A peripheral that
+ * stops responding mid-transfer therefore blocks its bus for that whole time,
+ * and on a shared bus every other device on it waits too. The downstream
+ * driver for this same hardware sizes the timeout per transfer.
+ */
+static unsigned long qup_i2c_xfer_timeout(struct qup_i2c_dev *qup, size_t len)
+{
+	return TOUT_MIN * HZ + usecs_to_jiffies(len * qup->one_byte_t);
+}
+
 static int qup_i2c_wait_for_complete(struct qup_i2c_dev *qup,
 				     struct i2c_msg *msg)
 {
 	unsigned long left;
 	int ret = 0;
 
-	left = wait_for_completion_timeout(&qup->xfer, qup->xfer_timeout);
+	left = wait_for_completion_timeout(&qup->xfer,
+					   qup_i2c_xfer_timeout(qup, msg->len));
 	if (!left) {
 		writel(1, qup->base + QUP_SW_RESET);
 		ret = -ETIMEDOUT;
