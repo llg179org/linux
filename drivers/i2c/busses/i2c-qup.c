@@ -953,6 +953,67 @@ static unsigned long qup_i2c_xfer_timeout(struct qup_i2c_dev *qup, size_t len)
 	return TOUT_MIN * HZ + usecs_to_jiffies(len * qup->one_byte_t);
 }
 
+/*
+ * Attempts at clocking a stuck slave off the bus before giving up on it.
+ * Ten is what the vendor driver for this block uses.
+ */
+#define QUP_BUS_CLEAR_TRIES	10
+
+/*
+ * Clock a slave that is holding the bus until it lets go.
+ *
+ * A slave interrupted mid-byte keeps SDA low waiting for the clocks it was
+ * promised, and a software reset of this controller does not give them to it:
+ * the master lets the lines go, the slave does not, and every following
+ * transfer to that device fails. The i2c specification's remedy is to send
+ * clock pulses until the slave completes its byte and releases SDA, and this
+ * block implements exactly that in hardware - writing QUP_I2C_MASTER_BUS_CLR
+ * emits nine pulses and clears the register when it is done.
+ *
+ * The register is not described in this driver. Its offset and behaviour are
+ * taken from the vendor i2c-msm-v2 driver for the same QUP block, which runs
+ * this sequence for the same reason.
+ */
+static void qup_i2c_bus_clear(struct qup_i2c_dev *qup)
+{
+	unsigned long wait_us;
+	int i;
+
+	/*
+	 * one_byte_t is nine bit periods, which is what one bus-clear emits.
+	 * Wait ten times that so a slow bus is never cut short, and never less
+	 * than 100 us so a fast one still yields.
+	 */
+	wait_us = max_t(unsigned long, 10 * qup->one_byte_t, 100);
+
+	for (i = 0; i < QUP_BUS_CLEAR_TRIES; i++) {
+		u32 status;
+
+		/* drop whatever the failed transfer left queued */
+		qup_i2c_flush(qup);
+
+		if (qup_i2c_change_state(qup, QUP_RUN_STATE))
+			return;
+
+		writel(qup->clk_ctl, qup->base + QUP_I2C_CLK_CTL);
+		writel(1, qup->base + QUP_I2C_MASTER_BUS_CLR);
+		usleep_range(wait_us, wait_us * 2);
+
+		status = readl(qup->base + QUP_I2C_STATUS);
+		if (!readl(qup->base + QUP_I2C_MASTER_BUS_CLR) &&
+		    !(status & I2C_STATUS_BUS_ACTIVE) &&
+		    status & I2C_STATUS_SDA) {
+			dev_dbg(qup->dev, "bus cleared after %d attempt(s)\n",
+				i + 1);
+			return;
+		}
+	}
+
+	dev_err_ratelimited(qup->dev,
+			    "bus still held after %d bus-clear attempts\n",
+			    QUP_BUS_CLEAR_TRIES);
+}
+
 static int qup_i2c_wait_for_complete(struct qup_i2c_dev *qup,
 				     struct i2c_msg *msg)
 {
@@ -981,6 +1042,15 @@ static int qup_i2c_wait_for_complete(struct qup_i2c_dev *qup,
 					    "master is us" : "master is not us",
 				    !!(status & I2C_STATUS_SDA),
 				    !!(status & I2C_STATUS_SCL), status);
+
+		/*
+		 * Only when somebody is actually holding the bus. A timeout on
+		 * an idle bus with both lines high is a different fault, and
+		 * clocking it would be noise.
+		 */
+		if (!(status & I2C_STATUS_SDA) ||
+		    status & I2C_STATUS_BUS_ACTIVE)
+			qup_i2c_bus_clear(qup);
 
 		writel(1, qup->base + QUP_SW_RESET);
 		ret = -ETIMEDOUT;
