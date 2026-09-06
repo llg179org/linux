@@ -238,6 +238,15 @@ struct qup_i2c_dev {
 	struct i2c_adapter	adap;
 
 	int			clk_ctl;
+	/*
+	 * The last values written to QUP_CONFIG and QUP_I2C_MASTER_GEN. Cached
+	 * rather than recomputed because they differ between QUP v1 and v2, and
+	 * the bus-clear path below has to restore the core exactly as the
+	 * transfer path left it - branching on the version there would be a
+	 * second place to keep in step with this one.
+	 */
+	u32			qup_config;
+	u32			master_gen;
 	int			out_fifo_sz;
 	int			in_fifo_sz;
 	int			out_blk_sz;
@@ -429,6 +438,18 @@ static int qup_i2c_poll_state_valid(struct qup_i2c_dev *qup)
 static int qup_i2c_poll_state_i2c_master(struct qup_i2c_dev *qup)
 {
 	return qup_i2c_poll_state_mask(qup, QUP_I2C_MAST_GEN, QUP_I2C_MAST_GEN);
+}
+
+static void qup_i2c_write_config(struct qup_i2c_dev *qup, u32 config)
+{
+	qup->qup_config = config;
+	writel(config, qup->base + QUP_CONFIG);
+}
+
+static void qup_i2c_write_master_gen(struct qup_i2c_dev *qup, u32 val)
+{
+	qup->master_gen = val;
+	writel(val, qup->base + QUP_I2C_MASTER_GEN);
 }
 
 static int qup_i2c_change_state(struct qup_i2c_dev *qup, u32 state)
@@ -988,8 +1009,24 @@ static void qup_i2c_bus_clear(struct qup_i2c_dev *qup)
 	wait_us = max_t(unsigned long, 10 * qup->one_byte_t, 100);
 
 	for (i = 0; i < QUP_BUS_CLEAR_TRIES; i++) {
-		/* drop whatever the failed transfer left queued */
-		qup_i2c_flush(qup);
+		/*
+		 * ☠️ Reset the core to idle and bring it back up before asking
+		 * for the clear. Flushing and forcing RUN is not enough: with a
+		 * transfer wedged, the block simply does not accept the command
+		 * and QUP_I2C_MASTER_BUS_CLR reads back as still set - measured
+		 * on an SDM632 board, ten attempts, "clear not accepted" every
+		 * time. The vendor driver for this block resets first for the
+		 * same reason.
+		 */
+		writel(1, qup->base + QUP_SW_RESET);
+		if (qup_i2c_poll_state(qup, QUP_RESET_STATE))
+			return;
+
+		writel(qup->qup_config, qup->base + QUP_CONFIG);
+		if (qup->master_gen)
+			writel(qup->master_gen, qup->base + QUP_I2C_MASTER_GEN);
+		if (qup_i2c_poll_state_i2c_master(qup))
+			return;
 
 		if (qup_i2c_change_state(qup, QUP_RUN_STATE))
 			return;
@@ -1139,7 +1176,7 @@ static void qup_i2c_conf_v1(struct qup_i2c_dev *qup)
 		qup_config |= QUP_NO_INPUT;
 	}
 
-	writel(qup_config, qup->base + QUP_CONFIG);
+	qup_i2c_write_config(qup, qup_config);
 	writel(io_mode, qup->base + QUP_IO_MODE);
 }
 
@@ -1236,7 +1273,7 @@ static int qup_i2c_xfer(struct i2c_adapter *adap,
 		goto out;
 
 	/* Configure QUP as I2C mini core */
-	writel(I2C_MINI_CORE | I2C_N_VAL, qup->base + QUP_CONFIG);
+	qup_i2c_write_config(qup, I2C_MINI_CORE | I2C_N_VAL);
 
 	for (idx = 0; idx < num; idx++) {
 		if (qup_i2c_poll_state_i2c_master(qup)) {
@@ -1299,7 +1336,7 @@ static void qup_i2c_conf_count_v2(struct qup_i2c_dev *qup)
 		qup_config |= QUP_NO_INPUT;
 	}
 
-	writel(qup_config, qup->base + QUP_CONFIG);
+	qup_i2c_write_config(qup, qup_config);
 }
 
 /*
@@ -1715,8 +1752,8 @@ static int qup_i2c_xfer_v2(struct i2c_adapter *adap,
 		goto out;
 
 	/* Configure QUP as I2C mini core */
-	writel(I2C_MINI_CORE | I2C_N_VAL_V2, qup->base + QUP_CONFIG);
-	writel(QUP_V2_TAGS_EN, qup->base + QUP_I2C_MASTER_GEN);
+	qup_i2c_write_config(qup, I2C_MINI_CORE | I2C_N_VAL_V2);
+	qup_i2c_write_master_gen(qup, QUP_V2_TAGS_EN);
 
 	if (qup_i2c_poll_state_i2c_master(qup)) {
 		ret = -EIO;
